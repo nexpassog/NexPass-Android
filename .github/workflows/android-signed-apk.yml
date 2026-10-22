@@ -99,7 +99,7 @@ jobs:
               raise SystemExit(f"ANDROID_KEYSTORE_BASE64 is not valid base64: {error}")
           (android_dir / "nexpass-release.jks").write_bytes(keystore)
           (android_dir / "keystore.properties").write_text(
-              "storeFile=nexpass-release.jks\n"
+              "storeFile=../nexpass-release.jks\n"
               f"storePassword={os.environ['ANDROID_KEYSTORE_PASSWORD']}\n"
               f"keyAlias={os.environ['ANDROID_KEY_ALIAS']}\n"
               f"keyPassword={os.environ['ANDROID_KEY_PASSWORD']}\n",
