@@ -37,27 +37,77 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
-      - name: Write build-time environment file
+      - name: Generate Android project
+        run: npx tauri android init
+
+      - name: Write Rust OAuth secrets
+        env:
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          FIREBASE_API_KEY: ${{ secrets.FIREBASE_API_KEY }}
         run: |
-          mkdir -p src-tauri
-          cat > src-tauri/.env <<'EOF'
-          GOOGLE_CLIENT_ID=${{ secrets.GOOGLE_CLIENT_ID }}
-          GOOGLE_CLIENT_SECRET=${{ secrets.GOOGLE_CLIENT_SECRET }}
-          FIREBASE_API_KEY=${{ secrets.FIREBASE_API_KEY }}
-          EOF
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          names = ("GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "FIREBASE_API_KEY")
+          missing = [name for name in names if not os.environ.get(name)]
+          if missing:
+              raise SystemExit(f"Missing required GitHub Actions secrets: {', '.join(missing)}")
+
+          output = Path("src-tauri/src/secrets.rs")
+          output.write_text(
+              "".join(f'pub const {name}: &str = {json.dumps(os.environ[name])};\n' for name in names),
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Patch Android project for signed builds and in-app APK install
+        run: |
+          python3 .github/scripts/patch_gradle.py
+          python3 .github/scripts/patch_android_installer.py
 
       - name: Write Android signing files
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
-          mkdir -p src-tauri/gen/android
-          echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 --decode > src-tauri/gen/android/nexpass-release.jks
-          cat > src-tauri/gen/android/keystore.properties <<'EOF'
-          storeFile=nexpass-release.jks
-          storePassword=${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          keyAlias=${{ secrets.ANDROID_KEY_ALIAS }}
-          keyPassword=${{ secrets.ANDROID_KEY_PASSWORD }}EOF
+          python3 - <<'PY'
+          import base64
+          import os
+          from pathlib import Path
+
+          names = (
+              "ANDROID_KEYSTORE_BASE64",
+              "ANDROID_KEYSTORE_PASSWORD",
+              "ANDROID_KEY_ALIAS",
+              "ANDROID_KEY_PASSWORD",
+          )
+          missing = [name for name in names if not os.environ.get(name)]
+          if missing:
+              raise SystemExit(f"Missing required GitHub Actions secrets: {', '.join(missing)}")
+
+          android_dir = Path("src-tauri/gen/android")
+          android_dir.mkdir(parents=True, exist_ok=True)
+          try:
+              encoded_keystore = "".join(os.environ["ANDROID_KEYSTORE_BASE64"].split())
+              keystore = base64.b64decode(encoded_keystore, validate=True)
+          except ValueError as error:
+              raise SystemExit(f"ANDROID_KEYSTORE_BASE64 is not valid base64: {error}")
+          (android_dir / "nexpass-release.jks").write_bytes(keystore)
+          (android_dir / "keystore.properties").write_text(
+              "storeFile=nexpass-release.jks\n"
+              f"storePassword={os.environ['ANDROID_KEYSTORE_PASSWORD']}\n"
+              f"keyAlias={os.environ['ANDROID_KEY_ALIAS']}\n"
+              f"keyPassword={os.environ['ANDROID_KEY_PASSWORD']}\n",
+              encoding="utf-8",
+          )
+          PY
 
       - name: Build signed APK
         env:
           ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
-          JAVA_HOME: ${{ steps.setup-java.outputs.java-home }}
         run: npx tauri android build --apk
