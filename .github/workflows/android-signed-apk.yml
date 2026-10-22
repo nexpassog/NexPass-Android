@@ -20,6 +20,7 @@ jobs:
         uses: actions/setup-node@v5
         with:
           node-version: 20
+          cache: npm
 
       - name: Setup Java
         id: setup-java
@@ -39,6 +40,9 @@ jobs:
 
       - name: Generate Android project
         run: npx tauri android init
+
+      - name: Generate app icons
+        run: npx tauri icon src-tauri/icons/icon.png
 
       - name: Write Rust OAuth secrets
         env:
@@ -67,6 +71,21 @@ jobs:
         run: |
           python3 .github/scripts/patch_gradle.py
           python3 .github/scripts/patch_android_installer.py
+
+      - name: Cache Gradle files
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('src-tauri/gen/android/gradle/wrapper/gradle-wrapper.properties', 'src-tauri/gen/android/**/*.gradle*') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
 
       - name: Write Android signing files
         env:
