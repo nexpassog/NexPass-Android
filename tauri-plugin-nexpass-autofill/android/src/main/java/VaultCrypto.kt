@@ -44,7 +44,8 @@ object VaultCrypto {
      */
     fun deriveKey(pin: String, saltB64: String): ByteArray {
         val salt = saltB64.toByteArray(Charsets.UTF_8)
-        val params = Argon2Parameters.Builder(Argon2Parameters.ARGON2_ID, salt)
+        // NOTE: BouncyCastle's variant constants are lowercase (ARGON2_id).
+        val params = Argon2Parameters.Builder(Argon2Parameters.ARGON2_id, salt)
             .withVersion(Argon2Parameters.ARGON2_VERSION_13)
             .withMemoryAsKB(19456)
             .withIterations(2)
@@ -111,7 +112,8 @@ object VaultCrypto {
         v = versionMatch?.groupValues?.get(1)?.toIntOrNull() ?: v
 
         val salt = decodeSalt(saltB64)
-        val mode = if (phc.startsWith("argon2i$")) Argon2Parameters.ARGON2_I else Argon2Parameters.ARGON2_ID
+        // NOTE: BouncyCastle's variant constants are lowercase (ARGON2_i / ARGON2_id).
+        val mode = if (phc.startsWith("argon2i$")) Argon2Parameters.ARGON2_i else Argon2Parameters.ARGON2_id
         val params = Argon2Parameters.Builder(mode, salt)
             .withVersion(v)
             .withMemoryAsKB(m)
