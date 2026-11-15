@@ -65,6 +65,41 @@ fn open_db(app: &AppHandle) -> Result<Connection, String> {
     let _ = conn.execute("ALTER TABLE entries ADD COLUMN fields_ct TEXT", []);
     let _ = conn.execute("ALTER TABLE entries ADD COLUMN fields_nonce TEXT", []);
 
+    // Migration for TOTP secrets (v6.1.0) — an encrypted base32 secret so
+    // the app can generate live 2FA codes on the entry detail view.
+    let _ = conn.execute("ALTER TABLE entries ADD COLUMN totp_ct TEXT", []);
+    let _ = conn.execute("ALTER TABLE entries ADD COLUMN totp_nonce TEXT", []);
+
+    // Queue of ids whose cloud documents still exist but whose local rows
+    // were permanently deleted. `permanently_delete_entry` tries to remove
+    // the cloud doc immediately; if that fails (offline, rate limit) the
+    // id lands here and every sync retries the delete until it succeeds —
+    // otherwise the next pull would resurrect the deleted entry.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS pending_deletes (
+            id TEXT PRIMARY KEY,
+            deleted_at INTEGER NOT NULL
+        )",
+        [],
+    )
+    .map_err(|e| e.to_string())?;
+
+    // Safety net for sync conflicts: before a remote entry overwrites a
+    // locally-dirty row (both devices changed the same entry since the
+    // last sync), the local version is archived here so NOTHING is ever
+    // silently lost. Surfaced in the UI as a "conflicts" review list.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS conflict_backups (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            saved_at INTEGER NOT NULL
+        )",
+        [],
+    )
+    .map_err(|e| e.to_string())?;
+
     Ok(conn)
 }
 
@@ -86,6 +121,10 @@ pub struct EntryInput {
     pub category: String,
     #[serde(default)]
     pub fields_json: Option<String>,
+    /// Raw base32 TOTP secret (RFC 6238) — encrypted at rest like every
+    /// other sensitive field. None/empty removes the secret.
+    #[serde(default)]
+    pub totp_secret: Option<String>,
 }
 
 pub fn default_category() -> String {
@@ -115,6 +154,7 @@ pub struct EntryFull {
     pub favorite: bool,
     pub category: String,
     pub fields_json: Option<String>,
+    pub totp_secret: Option<String>,
 }
 
 fn enc(text: &str, key: &VaultKey) -> Result<EncryptedPayload, String> {
@@ -159,6 +199,19 @@ fn enc_opt(value: &Option<String>, key: &VaultKey) -> Result<(Option<String>, Op
     }
 }
 
+/// Encrypts the entry's TOTP secret (or None to clear it). An empty
+/// string is treated the same as None so "user erased the field" works
+/// naturally from the form.
+fn normalize_totp(
+    secret: &Option<String>,
+    key: &VaultKey,
+) -> Result<(Option<String>, Option<String>), String> {
+    match secret {
+        Some(s) if !s.trim().is_empty() => enc_opt(&Some(s.trim().to_string()), key),
+        _ => Ok((None, None)),
+    }
+}
+
 pub fn add_entry(app: &AppHandle, key: &VaultKey, input: EntryInput) -> Result<String, String> {
     let conn = open_db(app)?;
     let id = Uuid::new_v4().to_string();
@@ -170,12 +223,13 @@ pub fn add_entry(app: &AppHandle, key: &VaultKey, input: EntryInput) -> Result<S
     let url = enc(&input.url, key)?;
     let notes = enc(&input.notes, key)?;
     let (fields_ct, fields_nonce) = enc_opt(&input.fields_json, key)?;
+    let totp = normalize_totp(&input.totp_secret, key)?;
 
     conn.execute(
         "INSERT INTO entries (id, title_ct, title_nonce, username_ct, username_nonce,
             password_ct, password_nonce, url_ct, url_nonce, notes_ct, notes_nonce,
-            created_at, updated_at, category, fields_ct, fields_nonce)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
+            created_at, updated_at, category, fields_ct, fields_nonce, totp_ct, totp_nonce)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)",
         params![
             id,
             title.ciphertext_b64,
@@ -192,7 +246,9 @@ pub fn add_entry(app: &AppHandle, key: &VaultKey, input: EntryInput) -> Result<S
             now,
             input.category,
             fields_ct,
-            fields_nonce
+            fields_nonce,
+            totp.0,
+            totp.1
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -277,7 +333,7 @@ pub fn get_entry(app: &AppHandle, key: &VaultKey, id: &str) -> Result<EntryFull,
         .prepare(
             "SELECT title_ct, title_nonce, username_ct, username_nonce, password_ct, password_nonce,
                     url_ct, url_nonce, notes_ct, notes_nonce, updated_at, favorite, category,
-                    fields_ct, fields_nonce
+                    fields_ct, fields_nonce, totp_ct, totp_nonce
              FROM entries WHERE id = ?1",
         )
         .map_err(|e| e.to_string())?;
@@ -300,6 +356,8 @@ pub fn get_entry(app: &AppHandle, key: &VaultKey, id: &str) -> Result<EntryFull,
                 row.get::<_, String>(12)?,
                 row.get::<_, Option<String>>(13)?,
                 row.get::<_, Option<String>>(14)?,
+                row.get::<_, Option<String>>(15)?,
+                row.get::<_, Option<String>>(16)?,
             ))
         })
         .map_err(|_| "entry not found".to_string())?;
@@ -320,6 +378,8 @@ pub fn get_entry(app: &AppHandle, key: &VaultKey, id: &str) -> Result<EntryFull,
         category,
         fields_ct,
         fields_nonce,
+        totp_ct,
+        totp_nonce,
     ) = row;
 
     Ok(EntryFull {
@@ -333,6 +393,7 @@ pub fn get_entry(app: &AppHandle, key: &VaultKey, id: &str) -> Result<EntryFull,
         favorite: favorite != 0,
         category,
         fields_json: dec_opt_none(fields_ct, fields_nonce, key)?,
+        totp_secret: dec_opt_none(totp_ct, totp_nonce, key)?,
     })
 }
 
@@ -351,13 +412,14 @@ pub fn update_entry(
     let url = enc(&input.url, key)?;
     let notes = enc(&input.notes, key)?;
     let (fields_ct, fields_nonce) = enc_opt(&input.fields_json, key)?;
+    let totp = normalize_totp(&input.totp_secret, key)?;
 
     let affected = conn
         .execute(
             "UPDATE entries SET title_ct=?1, title_nonce=?2, username_ct=?3, username_nonce=?4,
                 password_ct=?5, password_nonce=?6, url_ct=?7, url_nonce=?8,
                 notes_ct=?9, notes_nonce=?10, updated_at=?11, synced_at=NULL, category=?12,
-                fields_ct=?13, fields_nonce=?14 WHERE id=?15",
+                fields_ct=?13, fields_nonce=?14, totp_ct=?15, totp_nonce=?16 WHERE id=?17",
             params![
                 title.ciphertext_b64,
                 title.nonce_b64,
@@ -373,6 +435,8 @@ pub fn update_entry(
                 input.category,
                 fields_ct,
                 fields_nonce,
+                totp.0,
+                totp.1,
                 id
             ],
         )
@@ -412,10 +476,14 @@ pub fn restore_entry(app: &AppHandle, id: &str) -> Result<(), String> {
 }
 
 /// Permanently removes an entry — only meant to be called from Trash.
-/// Deletes every local entry (used when this device adopts a
-/// different account/device's vault key — entries encrypted under the
-/// old key are permanently undecryptable under the new one, so they're
-/// cleared to make room for a fresh pull from the cloud).
+/// The id is FIRST queued in `pending_deletes` so the cloud document is
+/// retried on every sync until the delete is confirmed; a failed remote
+/// delete used to be silently ignored and the entry came back on the
+/// next pull (the resurrection bug). Every local entry is deleted (used
+/// when this device adopts a different account/device's vault key —
+/// entries encrypted under the old key are permanently undecryptable
+/// under the new one, so they're cleared to make room for a fresh pull
+/// from the cloud).
 pub fn wipe_all_entries(app: &AppHandle) -> Result<(), String> {
     let conn = open_db(app)?;
     conn.execute("DELETE FROM entries", []).map_err(|e| e.to_string())?;
@@ -426,8 +494,131 @@ pub fn permanently_delete_entry(app: &AppHandle, id: &str) -> Result<(), String>
     let conn = open_db(app)?;
     conn.execute("DELETE FROM entries WHERE id = ?1", params![id])
         .map_err(|e| e.to_string())?;
+    enqueue_pending_delete(app, id)
+}
+
+// --- Pending remote-deletes (tombstone retry queue) ---
+
+/// Records that the cloud document `id` still needs to be deleted.
+/// Harmless when the delete already succeeded — the sync loop clears
+/// the queue entry right after a confirmed remote delete.
+pub fn enqueue_pending_delete(app: &AppHandle, id: &str) -> Result<(), String> {
+    let conn = open_db(app)?;
+    conn.execute(
+        "INSERT OR REPLACE INTO pending_deletes (id, deleted_at) VALUES (?1, ?2)",
+        params![id, now_unix()],
+    )
+    .map(|_| ())
+    .map_err(|e| e.to_string())
+}
+
+pub fn list_pending_deletes(app: &AppHandle) -> Result<Vec<String>, String> {
+    let conn = open_db(app)?;
+    let mut stmt = conn
+        .prepare("SELECT id FROM pending_deletes ORDER BY deleted_at ASC")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
+pub fn clear_pending_delete(app: &AppHandle, id: &str) -> Result<(), String> {
+    let conn = open_db(app)?;
+    conn.execute("DELETE FROM pending_deletes WHERE id = ?1", params![id])
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+// --- Conflict backups (no data ever silently lost) ---
+
+/// Archives the local (still-encrypted) version of an entry that is
+/// about to be overwritten by a newer remote version while the local
+/// copy itself had unsynced edits. The UI lists these as "conflicts".
+fn save_conflict_backup(app: &AppHandle, entry: &RawEntry, reason: &str) -> Result<(), String> {
+    let conn = open_db(app)?;
+    let payload = serde_json::to_string(entry).map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT INTO conflict_backups (id, reason, payload, saved_at) VALUES (?1, ?2, ?3, ?4)",
+        params![entry.id, reason, payload, now_unix()],
+    )
+    .map(|_| ())
+    .map_err(|e| e.to_string())
+}
+
+#[derive(Serialize)]
+pub struct ConflictBackup {
+    pub seq: i64,
+    pub id: String,
+    pub reason: String,
+    pub saved_at: i64,
+    /// The archived entry, decrypted for review (frontend-only display).
+    pub entry: EntryFull,
+}
+
+pub fn list_conflict_backups(app: &AppHandle, key: &VaultKey) -> Result<Vec<ConflictBackup>, String> {
+    let conn = open_db(app)?;
+    let mut stmt = conn
+        .prepare("SELECT seq, id, reason, payload, saved_at FROM conflict_backups ORDER BY saved_at DESC")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i64>(4)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+
+    let mut out = Vec::new();
+    for row in rows {
+        let (seq, id, reason, payload, saved_at) = row.map_err(|e| e.to_string())?;
+        let raw: RawEntry = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
+        out.push(ConflictBackup {
+            seq,
+            id: id.clone(),
+            reason,
+            saved_at,
+            entry: EntryFull {
+                id,
+                title: dec(&raw.title_ct, &raw.title_nonce, key)?,
+                username: dec_opt(raw.username_ct, raw.username_nonce, key)?,
+                password: dec(&raw.password_ct, &raw.password_nonce, key)?,
+                url: dec_opt(raw.url_ct, raw.url_nonce, key)?,
+                notes: dec_opt(raw.notes_ct, raw.notes_nonce, key)?,
+                updated_at: raw.updated_at,
+                favorite: raw.favorite,
+                category: raw.category.clone(),
+                fields_json: dec_opt_none(raw.fields_ct, raw.fields_nonce, key)?,
+                totp_secret: dec_opt_none(raw.totp_ct, raw.totp_nonce, key)?,
+            },
+        });
+    }
+    Ok(out)
+}
+
+pub fn clear_conflict_backup(app: &AppHandle, seq: i64) -> Result<(), String> {
+    let conn = open_db(app)?;
+    conn.execute("DELETE FROM conflict_backups WHERE seq = ?1", params![seq])
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
+
+#[allow(dead_code)]
+pub fn count_conflict_backups(app: &AppHandle) -> Result<i64, String> {
+    let conn = open_db(app)?;
+    conn.query_row("SELECT COUNT(*) FROM conflict_backups", [], |row| row.get(0))
+        .map_err(|e| e.to_string())
+}
+
+// (kept public for diagnostics; the UI reads the full list instead)
 
 pub fn toggle_favorite(app: &AppHandle, id: &str) -> Result<bool, String> {
     let conn = open_db(app)?;
@@ -475,6 +666,10 @@ pub struct RawEntry {
     pub fields_ct: Option<String>,
     #[serde(default)]
     pub fields_nonce: Option<String>,
+    #[serde(default)]
+    pub totp_ct: Option<String>,
+    #[serde(default)]
+    pub totp_nonce: Option<String>,
 }
 
 pub fn export_all(app: &AppHandle, key: &VaultKey) -> Result<Vec<EntryFull>, String> {
@@ -495,6 +690,7 @@ pub fn export_all(app: &AppHandle, key: &VaultKey) -> Result<Vec<EntryFull>, Str
             favorite: r.favorite,
             category: r.category.clone(),
             fields_json: dec_opt_none(r.fields_ct, r.fields_nonce, key)?,
+            totp_secret: dec_opt_none(r.totp_ct, r.totp_nonce, key)?,
         });
     }
     Ok(out)
@@ -528,7 +724,8 @@ fn list_entries_raw_where(app: &AppHandle, where_clause: &str) -> Result<Vec<Raw
     let sql = format!(
         "SELECT id, title_ct, title_nonce, username_ct, username_nonce, password_ct,
                 password_nonce, url_ct, url_nonce, notes_ct, notes_nonce, created_at, updated_at,
-                favorite, deleted_at, synced_at, category, fields_ct, fields_nonce
+                favorite, deleted_at, synced_at, category, fields_ct, fields_nonce,
+                totp_ct, totp_nonce
          FROM entries WHERE {where_clause}"
     );
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
@@ -555,6 +752,8 @@ fn list_entries_raw_where(app: &AppHandle, where_clause: &str) -> Result<Vec<Raw
                 category: row.get(16)?,
                 fields_ct: row.get(17)?,
                 fields_nonce: row.get(18)?,
+                totp_ct: row.get(19)?,
+                totp_nonce: row.get(20)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -584,22 +783,39 @@ pub fn mark_synced(app: &AppHandle, ids_and_ts: &[(String, i64)]) -> Result<(), 
 }
 
 /// Writes a remote entry into the local DB only if it's newer than
-/// what's already there (or not present at all) — simple last-write-
-/// wins conflict resolution. Returns true if it actually applied.
+/// what's already there (or not present at all) — last-write-wins
+/// conflict resolution with a safety net: if the local row it's about
+/// to clobber had UNSYNCED edits of its own (both devices changed the
+/// same entry since the last sync), the local version is archived to
+/// `conflict_backups` first, so the losing side is never silently
+/// destroyed. Returns true if it actually applied.
 pub fn upsert_raw_entry_if_newer(app: &AppHandle, entry: &RawEntry) -> Result<bool, String> {
     let conn = open_db(app)?;
 
-    let existing_updated_at: Option<i64> = conn
+    let existing: Option<(i64, Option<i64>)> = conn
         .query_row(
-            "SELECT updated_at FROM entries WHERE id = ?1",
+            "SELECT updated_at, synced_at FROM entries WHERE id = ?1",
             params![entry.id],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .ok();
 
-    if let Some(local_ts) = existing_updated_at {
+    if let Some((local_ts, local_synced)) = existing {
         if local_ts >= entry.updated_at {
             return Ok(false);
+        }
+        // The local row is "dirty" when it was edited after its last
+        // successful push. Overwriting a dirty row with the remote
+        // version means real local work would vanish — archive first.
+        let dirty = local_synced.is_none() || local_synced.unwrap() < local_ts;
+        if dirty {
+            if let Ok(Some(local_raw)) = get_raw_entry(app, &entry.id) {
+                let _ = save_conflict_backup(
+                    app,
+                    &local_raw,
+                    &format!("local edit ({local_ts}) vs remote edit ({})", entry.updated_at),
+                );
+            }
         }
     }
 
@@ -609,8 +825,9 @@ pub fn upsert_raw_entry_if_newer(app: &AppHandle, entry: &RawEntry) -> Result<bo
     conn.execute(
         "INSERT INTO entries (id, title_ct, title_nonce, username_ct, username_nonce,
             password_ct, password_nonce, url_ct, url_nonce, notes_ct, notes_nonce,
-            created_at, updated_at, favorite, deleted_at, synced_at, category, fields_ct, fields_nonce)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?13,?16,?17,?18)
+            created_at, updated_at, favorite, deleted_at, synced_at, category, fields_ct, fields_nonce,
+            totp_ct, totp_nonce)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?13,?16,?17,?18,?19,?20)
          ON CONFLICT(id) DO UPDATE SET
             title_ct=excluded.title_ct, title_nonce=excluded.title_nonce,
             username_ct=excluded.username_ct, username_nonce=excluded.username_nonce,
@@ -619,7 +836,8 @@ pub fn upsert_raw_entry_if_newer(app: &AppHandle, entry: &RawEntry) -> Result<bo
             notes_ct=excluded.notes_ct, notes_nonce=excluded.notes_nonce,
             updated_at=excluded.updated_at, favorite=excluded.favorite,
             deleted_at=excluded.deleted_at, synced_at=excluded.updated_at, category=excluded.category,
-            fields_ct=excluded.fields_ct, fields_nonce=excluded.fields_nonce",
+            fields_ct=excluded.fields_ct, fields_nonce=excluded.fields_nonce,
+            totp_ct=excluded.totp_ct, totp_nonce=excluded.totp_nonce",
         params![
             entry.id,
             entry.title_ct,
@@ -638,12 +856,53 @@ pub fn upsert_raw_entry_if_newer(app: &AppHandle, entry: &RawEntry) -> Result<bo
             entry.deleted_at,
             entry.category,
             entry.fields_ct,
-            entry.fields_nonce
+            entry.fields_nonce,
+            entry.totp_ct,
+            entry.totp_nonce
         ],
     )
     .map_err(|e| e.to_string())?;
 
     Ok(true)
+}
+
+/// Fetches one raw entry by id (None if absent) — used by the conflict
+/// backup path above.
+fn get_raw_entry(app: &AppHandle, id: &str) -> Result<Option<RawEntry>, String> {
+    let conn = open_db(app)?;
+    let sql = "SELECT id, title_ct, title_nonce, username_ct, username_nonce, password_ct,
+            password_nonce, url_ct, url_nonce, notes_ct, notes_nonce, created_at, updated_at,
+            favorite, deleted_at, synced_at, category, fields_ct, fields_nonce, totp_ct, totp_nonce
+         FROM entries WHERE id = ?1";
+    let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+    let row = stmt
+        .query_row(params![id], |r| {
+            Ok(RawEntry {
+                id: r.get(0)?,
+                title_ct: r.get(1)?,
+                title_nonce: r.get(2)?,
+                username_ct: r.get(3)?,
+                username_nonce: r.get(4)?,
+                password_ct: r.get(5)?,
+                password_nonce: r.get(6)?,
+                url_ct: r.get(7)?,
+                url_nonce: r.get(8)?,
+                notes_ct: r.get(9)?,
+                notes_nonce: r.get(10)?,
+                created_at: r.get(11)?,
+                updated_at: r.get(12)?,
+                favorite: r.get::<_, i64>(13)? != 0,
+                deleted_at: r.get(14)?,
+                synced_at: r.get(15)?,
+                category: r.get(16)?,
+                fields_ct: r.get(17)?,
+                fields_nonce: r.get(18)?,
+                totp_ct: r.get(19)?,
+                totp_nonce: r.get(20)?,
+            })
+        })
+        .ok();
+    Ok(row)
 }
 
 /// Applies one pulled entry, honoring "trash is per-device, not

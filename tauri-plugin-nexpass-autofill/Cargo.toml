@@ -1,0 +1,17 @@
+[package]
+name = "tauri-plugin-nexpass-autofill"
+version = "0.1.0"
+authors = [ "NexApp" ]
+description = "Android Autofill + home-screen widget support for NexPass"
+edition = "2021"
+rust-version = "1.77.2"
+exclude = ["/examples", "/dist-js", "/guest-js", "/node_modules"]
+links = "tauri-plugin-nexpass-autofill"
+
+[dependencies]
+tauri = { version = "2.11.3" }
+serde = "1.0"
+thiserror = "2"
+
+[build-dependencies]
+tauri-plugin = { version = "2.6.3", features = ["build"] }

@@ -12,6 +12,7 @@
 // handle correctly).
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use tauri::AppHandle;
@@ -37,9 +38,17 @@ pub fn sign_in_with_google(app: &AppHandle) -> Result<FirebaseSession, String> {
     let port = listener.local_addr().map_err(|e| e.to_string())?.port();
     let redirect_uri = format!("http://127.0.0.1:{port}");
 
+    // PKCE (RFC 7636, S256): a fresh random verifier travels only with
+    // the local token exchange; the browser flow carries just its SHA-256
+    // challenge, so an intercepted authorization code is useless to an
+    // attacker. Once the OAuth client moves to the "Desktop app" type the
+    // client_secret can be dropped entirely — the code works either way.
+    let verifier = generate_code_verifier();
+    let challenge = code_challenge_s256(&verifier);
+
     let auth_url = format!(
-        "https://accounts.google.com/o/oauth2/v2/auth?client_id={}&redirect_uri={}&response_type=code&scope=openid%20email%20profile&access_type=offline&prompt=consent",
-        GOOGLE_CLIENT_ID, redirect_uri
+        "https://accounts.google.com/o/oauth2/v2/auth?client_id={}&redirect_uri={}&response_type=code&scope=openid%20email%20profile&access_type=offline&prompt=consent&code_challenge={}&code_challenge_method=S256",
+        GOOGLE_CLIENT_ID, redirect_uri, challenge
     );
 
     app.opener()
@@ -47,8 +56,25 @@ pub fn sign_in_with_google(app: &AppHandle) -> Result<FirebaseSession, String> {
         .map_err(|e| format!("could not open browser: {e}"))?;
 
     let code = wait_for_redirect_code(&listener)?;
-    let google_tokens = exchange_code_for_google_tokens(&code, &redirect_uri)?;
+    let google_tokens = exchange_code_for_google_tokens(&code, &redirect_uri, &verifier)?;
     exchange_id_token_for_firebase_session(&google_tokens.id_token)
+}
+
+/// 64 random URL-safe characters — comfortably inside RFC 7636's
+/// 43–128 character verifier range.
+fn generate_code_verifier() -> String {
+    use rand::Rng;
+    const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
+    let mut rng = rand::thread_rng();
+    (0..64)
+        .map(|_| CHARSET[rng.gen_range(0..CHARSET.len())] as char)
+        .collect()
+}
+
+fn code_challenge_s256(verifier: &str) -> String {
+    use base64::Engine;
+    let digest = Sha256::digest(verifier.as_bytes());
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest)
 }
 
 fn wait_for_redirect_code(listener: &TcpListener) -> Result<String, String> {
@@ -94,6 +120,7 @@ struct GoogleTokenResponse {
 fn exchange_code_for_google_tokens(
     code: &str,
     redirect_uri: &str,
+    code_verifier: &str,
 ) -> Result<GoogleTokenResponse, String> {
     let client = reqwest::blocking::Client::new();
     let resp = client
@@ -101,9 +128,15 @@ fn exchange_code_for_google_tokens(
         .form(&[
             ("code", code),
             ("client_id", GOOGLE_CLIENT_ID),
+            // The secret stays in the exchange because the current OAuth
+            // client is a "Web application" type (Google requires it
+            // there). PKCE above already protects the code itself; once
+            // the client is switched to "Desktop app" in Google Cloud
+            // this line can be removed for a secretless flow.
             ("client_secret", GOOGLE_CLIENT_SECRET),
             ("redirect_uri", redirect_uri),
             ("grant_type", "authorization_code"),
+            ("code_verifier", code_verifier),
         ])
         .send()
         .map_err(|e| e.to_string())?;

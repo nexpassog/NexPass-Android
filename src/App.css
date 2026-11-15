@@ -524,3 +524,27 @@ input, textarea, select, button { font-family: inherit; }
   .new-item-btn span, .new-item-btn { font-size: 0.8rem; }
   .island-nav button { font-size: 0.58rem; }
 }
+
+/* ---------- v6.1 additions: TOTP + breach check ---------- */
+
+.totp-row { align-items: center; gap: 8px; }
+.totp-code {
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  color: #4ade80;
+}
+.totp-code.totp-error { font-size: 13px; font-weight: 500; color: #f87171; letter-spacing: 0; }
+.totp-ring { display: inline-flex; color: #4ade80; }
+.totp-input { font-family: "Cascadia Mono", Consolas, monospace; }
+.form-hint {
+  font-size: 12px;
+  opacity: 0.6;
+  margin: -6px 0 10px;
+  padding: 0 2px;
+}
+.breach-row { display: flex; align-items: center; gap: 12px; margin: 4px 0 8px; flex-wrap: wrap; }
+.breach-result { font-size: 13px; font-weight: 600; }
+.breach-result.bad { color: #f87171; }
+.breach-result.ok { color: #4ade80; }

@@ -112,6 +112,14 @@ interface EntryFull extends EntrySummary {
   password: string;
   notes: string;
   fields_json: string | null;
+  totp_secret: string | null;
+}
+
+// Backend-enforced wrong-PIN throttling result (see lib.rs ThrottleState).
+interface UnlockResult {
+  unlocked: boolean;
+  lock_secs: number;
+  tries_left: number;
 }
 
 interface EntryFormState {
@@ -121,6 +129,7 @@ interface EntryFormState {
   url: string;
   notes: string;
   category: string;
+  totp_secret: string;
 }
 
 interface ReleaseNote {
@@ -285,7 +294,7 @@ function buildFieldsJson(fields: Record<string, string>, codes: BackupCode[]): s
   return JSON.stringify({ ...fields, ...(hasCodes ? { codes } : {}) });
 }
 
-const emptyForm: EntryFormState = { title: "", username: "", password: "", url: "", notes: "", category: "login" };
+const emptyForm: EntryFormState = { title: "", username: "", password: "", url: "", notes: "", category: "login", totp_secret: "" };
 
 function loadDailySyncPref(): DailySyncPref {
   try {
@@ -523,6 +532,14 @@ function App() {
   const [error, setError] = useState("");
   const [shake, setShake] = useState(false);
 
+  // --- TOTP live code (entry detail) ---
+  const [totpCode, setTotpCode] = useState<string | null>(null);
+  const [totpRemaining, setTotpRemaining] = useState(30);
+
+  // --- Breach check (add/edit form) ---
+  const [breachResult, setBreachResult] = useState<number | null>(null);
+  const [breachBusy, setBreachBusy] = useState(false);
+
   const [googleSession, setGoogleSession] = useState<GoogleSession | null>(null);
   const [signingIn, setSigningIn] = useState(false);
   const [syncing, setSyncing] = useState(false);
@@ -737,12 +754,16 @@ function App() {
     }
     if (screen === "enter-pin") {
       try {
-        const ok = await invoke<boolean>("unlock_with_pin", { pin: next });
-        if (ok) {
+        // Throttling is enforced in Rust (persists across restarts).
+        const result = await invoke<UnlockResult>("unlock_with_pin", { pin: next });
+        if (result.unlocked) {
           setPin("");
           setScreen("vault");
+        } else if (result.lock_secs > 0) {
+          triggerError(`Too many wrong attempts — locked for ${result.lock_secs}s.`);
         } else {
-          triggerError("Wrong PIN — try again.");
+          const left = result.tries_left;
+          triggerError(left > 0 ? `Wrong PIN — ${left} ${left === 1 ? "try" : "tries"} left.` : "Wrong PIN — try again.");
         }
       } catch (e) {
         triggerError(String(e));
@@ -754,6 +775,70 @@ function App() {
     setPin((p) => p.slice(0, -1));
     setError("");
   }
+
+  // Live TOTP countdown while an entry with a 2FA secret is open.
+  useEffect(() => {
+    const secret = selectedEntry?.totp_secret;
+    if (!secret) {
+      setTotpCode(null);
+      return;
+    }
+    let alive = true;
+    const refresh = () => {
+      invoke<[string, number]>("generate_totp", { secret })
+        .then(([code, remaining]) => {
+          if (!alive) return;
+          setTotpCode(code);
+          setTotpRemaining(remaining);
+        })
+        .catch(() => alive && setTotpCode(null));
+    };
+    refresh();
+    const id = setInterval(refresh, 1000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedEntry?.id, selectedEntry?.totp_secret]);
+
+  // --- Breach check (add/edit form) ---
+  async function handleBreachCheck() {
+    if (!form.password || breachBusy) return;
+    setBreachBusy(true);
+    try {
+      const n = await invoke<number>("check_password_breach", { password: form.password });
+      setBreachResult(n);
+    } catch (e) {
+      showToast(friendlyError(String(e)), "error", 4000);
+    } finally {
+      setBreachBusy(false);
+    }
+  }
+
+  // --- Android autofill provider status/settings ---
+  const [autofillEnabled, setAutofillEnabled] = useState(false);
+  async function openAutofillSettings() {
+    try {
+      await invoke("plugin:nexpass-autofill|open_autofill_settings");
+    } catch (e) {
+      showToast(friendlyError(String(e)), "error");
+      return;
+    }
+    setTimeout(refreshAutofillStatus, 1500);
+  }
+  async function refreshAutofillStatus() {
+    try {
+      const s = await invoke<{ enabled: boolean; ready: boolean }>("plugin:nexpass-autofill|autofill_status");
+      setAutofillEnabled(s.enabled);
+    } catch {
+      setAutofillEnabled(false);
+    }
+  }
+  useEffect(() => {
+    if (screen === "vault") refreshAutofillStatus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [screen]);
 
   async function handleGoogleSignIn() {
     setSigningIn(true);
@@ -991,6 +1076,7 @@ function App() {
     setForm(emptyForm);
     setFormFields({});
     setFormCodes([]);
+    setBreachResult(null);
     setSelectedId(null);
     setSelectedEntry(null);
     setViewingTrash(false);
@@ -1011,10 +1097,12 @@ function App() {
       url: selectedEntry.url,
       notes: selectedEntry.notes,
       category: selectedEntry.category,
+      totp_secret: selectedEntry.totp_secret ?? "",
     });
     const parsed = parseFieldsJson(selectedEntry.fields_json);
     setFormFields(parsed.fields);
     setFormCodes(parsed.codes);
+    setBreachResult(null);
     setPanelMode("edit");
   }
 
@@ -1090,7 +1178,7 @@ function App() {
       return;
     }
     const wasEdit = panelMode === "edit" && !!selectedId;
-    const input = { ...form, fields_json: buildFieldsJson(formFields, formCodes) };
+    const input = { ...form, totp_secret: form.totp_secret || null, fields_json: buildFieldsJson(formFields, formCodes) };
     try {
       if (wasEdit && selectedId) {
         await invoke("update_entry", { id: selectedId, input });
@@ -1240,8 +1328,8 @@ function App() {
       await biometricAuthenticate("Unlock NexPass", { allowDeviceCredential: true, cancelTitle: "Use PIN instead" } as never);
       const storedPin = await invoke<string | null>("get_biometric_pin");
       if (!storedPin) return;
-      const ok = await invoke<boolean>("unlock_with_pin", { pin: storedPin });
-      if (ok) {
+      const result = await invoke<UnlockResult>("unlock_with_pin", { pin: storedPin });
+      if (result.unlocked) {
         setPin("");
         setScreen("vault");
       } else {
@@ -1883,6 +1971,19 @@ function App() {
                           </div>
                         )}
                       </div>
+
+                      <div className="settings-row column">
+                        <div className="settings-row-title-line">
+                          <span className="settings-row-title">Autofill for other apps</span>
+                          <span className={`status-badge ${autofillEnabled ? "ok" : ""}`}>{autofillEnabled ? "On" : "Off"}</span>
+                        </div>
+                        <div className="settings-row-sub">
+                          Fills logins straight into Chrome and other apps. Requires biometric unlock (so autofill can decrypt on demand) and being set as the system autofill provider.
+                        </div>
+                        <div className="settings-btn-group">
+                          <button className="settings-btn" onClick={openAutofillSettings}>Set as autofill app</button>
+                        </div>
+                      </div>
                     </div>
 
                     <div className="settings-section">
@@ -2306,6 +2407,33 @@ function App() {
                   <span>{categoryLabel(selectedEntry.category)}</span>
                 </div>
 
+                {selectedEntry.totp_secret && (
+                  <div className="field-block">
+                    <label>2FA Code (TOTP)</label>
+                    <div className="field-row totp-row">
+                      {totpCode ? (
+                        <>
+                          <span className="totp-code">{totpCode.slice(0, 3)} {totpCode.slice(3)}</span>
+                          <span className="totp-ring" title={`Valid for ${totpRemaining}s`}>
+                            <svg viewBox="0 0 20 20" width="18" height="18">
+                              <circle cx="10" cy="10" r="8" fill="none" stroke="currentColor" strokeOpacity="0.25" strokeWidth="2.5" />
+                              <circle
+                                cx="10" cy="10" r="8" fill="none" stroke="currentColor" strokeWidth="2.5"
+                                strokeLinecap="round"
+                                strokeDasharray={`${(totpRemaining / 30) * 50.3} 50.3`}
+                                transform="rotate(-90 10 10)"
+                              />
+                            </svg>
+                          </span>
+                          <button className="icon-btn" onClick={() => copyToClipboard(totpCode, "2FA code")}><Icon.copy /></button>
+                        </>
+                      ) : (
+                        <span className="totp-code totp-error">invalid TOTP secret</span>
+                      )}
+                    </div>
+                  </div>
+                )}
+
                 {selectedEntry.category === "login" ? (
                   <>
                     <div className="field-block">
@@ -2526,6 +2654,33 @@ function App() {
                         </div>
                       )}
                     </>
+                  )}
+
+                  <label className="form-label">
+                    2FA Secret (TOTP) — optional
+                    <input
+                      className="totp-input"
+                      value={form.totp_secret}
+                      onChange={(e) => setForm({ ...form, totp_secret: e.target.value })}
+                      placeholder="Base32 secret from the site's 2FA setup (otpauth:// URI works too)"
+                      spellCheck={false}
+                    />
+                  </label>
+                  <div className="form-hint">The detail view will show live 6-digit codes once saved.</div>
+
+                  {form.password && (
+                    <div className="breach-row">
+                      <button type="button" className="pill-btn" onClick={handleBreachCheck} disabled={breachBusy}>
+                        {breachBusy ? "Checking…" : "Check breach status"}
+                      </button>
+                      {breachResult != null && (
+                        <span className={`breach-result ${breachResult > 0 ? "bad" : "ok"}`}>
+                          {breachResult > 0
+                            ? `⚠ Found in ${breachResult} breach${breachResult === 1 ? "" : "es"} — change it.`
+                            : "✓ Not in any known breach."}
+                        </span>
+                      )}
+                    </div>
                   )}
 
                   <div className="form-actions">

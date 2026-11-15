@@ -21,7 +21,8 @@
 use crate::storage;
 use crate::vault::{self, RawEntry};
 use serde_json::{json, Value};
-use std::time::Duration;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
 use crate::secrets::FIREBASE_API_KEY;
@@ -99,19 +100,49 @@ fn classify_status(status: reqwest::StatusCode, body: String) -> RetryableError 
     if status.is_server_error() || status.as_u16() == 429 {
         RetryableError::Retryable(format!("server error {status}: {body}"))
     } else if status.as_u16() == 401 {
+        clear_token_cache();
         RetryableError::Fatal("sign-in expired — please sign in to Google again".to_string())
     } else {
         RetryableError::Fatal(format!("request failed ({status}): {body}"))
     }
 }
 
+/// Firebase ID tokens live for an hour. Refreshing on EVERY call (status
+/// check, sync, backup...) cost an extra network round trip each time and
+/// let two overlapping calls race on the saved session — so a freshly
+/// refreshed token is reused for a while.
+static TOKEN_CACHE: Mutex<Option<(String, String, Instant)>> = Mutex::new(None);
+const TOKEN_REUSE_SECS: u64 = 45 * 60;
+
+/// Only one sync at a time; a second request while one is running is
+/// skipped instead of racing it (two syncs pushing/pulling the same rows).
+static SYNC_LOCK: Mutex<()> = Mutex::new(());
+
+fn clear_token_cache() {
+    if let Ok(mut cache) = TOKEN_CACHE.lock() {
+        *cache = None;
+    }
+}
+
 pub fn get_refreshed_session(app: &AppHandle) -> Result<(String, String), String> {
     let mut session = storage::load_google_session(app)?
         .ok_or_else(|| "Not signed in to Google — sign in first".to_string())?;
+
+    if let Ok(cache) = TOKEN_CACHE.lock() {
+        if let Some((token, uid, at)) = cache.as_ref() {
+            if *uid == session.local_id && at.elapsed().as_secs() < TOKEN_REUSE_SECS {
+                return Ok((token.clone(), uid.clone()));
+            }
+        }
+    }
+
     let (new_id_token, new_refresh_token) = refresh_id_token(&session.refresh_token)?;
     session.id_token = new_id_token.clone();
     session.refresh_token = new_refresh_token;
     storage::save_google_session(app, &session)?;
+    if let Ok(mut cache) = TOKEN_CACHE.lock() {
+        *cache = Some((new_id_token.clone(), session.local_id.clone(), Instant::now()));
+    }
     Ok((new_id_token, session.local_id))
 }
 
@@ -148,28 +179,48 @@ pub fn check_sync_status(app: &AppHandle) -> Result<SyncStatus, String> {
     })
 }
 
+/// Lists ALL documents under `base_url`, following Firestore's
+/// `nextPageToken`. A single request silently stops at pageSize, which
+/// meant vaults with more than ~300 entries never fully synced while the
+/// UI still reported "Up to date".
+fn list_all_documents(id_token: &str, base_url: &str, extra_query: &str) -> Result<Vec<Value>, String> {
+    let client = http_client()?;
+    let mut all: Vec<Value> = Vec::new();
+    let mut page_token: Option<String> = None;
+    loop {
+        let mut url = format!("{base_url}?pageSize=300{extra_query}");
+        if let Some(t) = &page_token {
+            url.push_str(&format!("&pageToken={}", urlencoding::encode(t)));
+        }
+        let json: Value = with_retry(|| {
+            let resp = client
+                .get(&url)
+                .bearer_auth(id_token)
+                .send()
+                .map_err(|e| RetryableError::Retryable(format!("network error: {e}")))?;
+            let status = resp.status();
+            if !status.is_success() {
+                let body = resp.text().unwrap_or_default();
+                return Err(classify_status(status, body));
+            }
+            resp.json::<Value>()
+                .map_err(|e| RetryableError::Fatal(format!("bad response: {e}")))
+        })?;
+        if let Some(docs) = json.get("documents").and_then(|d| d.as_array()) {
+            all.extend(docs.iter().cloned());
+        }
+        match json.get("nextPageToken").and_then(|t| t.as_str()) {
+            Some(t) if !t.is_empty() => page_token = Some(t.to_string()),
+            _ => break,
+        }
+    }
+    Ok(all)
+}
+
 /// Lists remote docs with only the `updated_at` field returned, so this
 /// is much cheaper than a full pull — used purely for change detection.
 fn fetch_remote_snapshot(id_token: &str, uid: &str) -> Result<(i64, i64), String> {
-    let client = http_client()?;
-    let url = format!("{}?pageSize=1000&mask.fieldPaths=updated_at", firestore_base(uid));
-
-    let json: Value = with_retry(|| {
-        let resp = client
-            .get(&url)
-            .bearer_auth(id_token)
-            .send()
-            .map_err(|e| RetryableError::Retryable(format!("network error: {e}")))?;
-        let status = resp.status();
-        if !status.is_success() {
-            let body = resp.text().unwrap_or_default();
-            return Err(classify_status(status, body));
-        }
-        resp.json::<Value>()
-            .map_err(|e| RetryableError::Fatal(format!("bad response: {e}")))
-    })?;
-
-    let documents = json.get("documents").and_then(|d| d.as_array()).cloned().unwrap_or_default();
+    let documents = list_all_documents(id_token, &firestore_base(uid), "&mask.fieldPaths=updated_at")?;
     let count = documents.len() as i64;
     let max_updated = documents
         .iter()
@@ -180,6 +231,13 @@ fn fetch_remote_snapshot(id_token: &str, uid: &str) -> Result<(i64, i64), String
 }
 
 pub fn sync_now(app: &AppHandle) -> Result<SyncSummary, String> {
+    let _guard = match SYNC_LOCK.try_lock() {
+        Ok(g) => g,
+        Err(std::sync::TryLockError::WouldBlock) => {
+            return Ok(SyncSummary { pushed: 0, pulled: 0, skipped: true });
+        }
+        Err(_) => return Err("sync lock poisoned".to_string()),
+    };
     emit_progress(app, "checking", 0, 0, "Checking what changed…");
     let (id_token, uid) = get_refreshed_session(app)?;
 
@@ -200,6 +258,7 @@ pub fn sync_now(app: &AppHandle) -> Result<SyncSummary, String> {
 
     let result = (|| -> Result<SyncSummary, String> {
         let pushed = push_entries(app, &id_token, &uid)?;
+        let _cleared_deletes = push_pending_deletes(app, &id_token, &uid)?;
         let pulled = pull_entries(app, &id_token, &uid)?;
         let (remote_count, remote_max_updated) = fetch_remote_snapshot(&id_token, &uid)?;
         storage::save_sync_meta(
@@ -336,24 +395,49 @@ pub fn delete_remote_entry(app: &AppHandle, id: &str) -> Result<(), String> {
     let (id_token, uid) = get_refreshed_session(app)?;
     let client = http_client()?;
     let url = format!("{}/{}", firestore_base(&uid), id);
-    let _ = client.delete(&url).bearer_auth(&id_token).send();
+    let resp = client
+        .delete(&url)
+        .bearer_auth(&id_token)
+        .send()
+        .map_err(|e| format!("delete failed: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!(
+            "remote delete failed: {}",
+            resp.text().unwrap_or_default()
+        ));
+    }
     Ok(())
+}
+
+/// Retries every queued cloud delete (from offline/failed
+/// `permanently_delete_entry` calls) until all succeed. Returns how
+/// many were confirmed removed this run. A delete that already
+/// succeeded returns 200/404 from Firestore — both count as done.
+fn push_pending_deletes(app: &AppHandle, id_token: &str, uid: &str) -> Result<usize, String> {
+    let pending = vault::list_pending_deletes(app)?;
+    if pending.is_empty() {
+        return Ok(0);
+    }
+    let client = http_client()?;
+    let mut cleared = 0usize;
+    for id in pending {
+        let url = format!("{}/{}", firestore_base(uid), id);
+        let resp = client.delete(&url).bearer_auth(id_token).send();
+        match resp {
+            Ok(r) if r.status().is_success() || r.status().as_u16() == 404 => {
+                vault::clear_pending_delete(app, &id)?;
+                cleared += 1;
+            }
+            _ => {} // keep queued; retried on the next sync
+        }
+    }
+    Ok(cleared)
 }
 
 pub fn delete_all_remote(app: &AppHandle) -> Result<(), String> {
     let (id_token, uid) = get_refreshed_session(app)?;
     let client = http_client()?;
-    let list_url = format!("{}?pageSize=300", firestore_base(&uid));
-    let resp = client
-        .get(&list_url)
-        .bearer_auth(&id_token)
-        .send()
-        .map_err(|e| e.to_string())?;
-    if !resp.status().is_success() {
-        return Err(format!("failed to list remote entries: {}", resp.text().unwrap_or_default()));
-    }
-    let json: Value = resp.json().map_err(|e| e.to_string())?;
-    let documents = json.get("documents").and_then(|d| d.as_array()).cloned().unwrap_or_default();
+    let documents = list_all_documents(&id_token, &firestore_base(&uid), "")?;
     for doc in documents {
         if let Some(name) = doc.get("name").and_then(|n| n.as_str()) {
             let del_url = format!("https://firestore.googleapis.com/v1/{name}");
@@ -419,6 +503,8 @@ fn entry_to_fields(entry: &RawEntry) -> Value {
     insert_opt(&mut fields, "notes_nonce", &entry.notes_nonce);
     insert_opt(&mut fields, "fields_ct", &entry.fields_ct);
     insert_opt(&mut fields, "fields_nonce", &entry.fields_nonce);
+    insert_opt(&mut fields, "totp_ct", &entry.totp_ct);
+    insert_opt(&mut fields, "totp_nonce", &entry.totp_nonce);
     fields.insert(
         "created_at".into(),
         json!({"integerValue": entry.created_at.to_string()}),
@@ -528,30 +614,8 @@ fn push_entries(app: &AppHandle, id_token: &str, uid: &str) -> Result<usize, Str
 
 fn pull_entries(app: &AppHandle, id_token: &str, uid: &str) -> Result<usize, String> {
     emit_progress(app, "pulling", 0, 0, "Downloading changes…");
-    let client = http_client()?;
-    let url = format!("{}?pageSize=300", firestore_base(uid));
-
-    let json: Value = with_retry(|| {
-        let resp = client
-            .get(&url)
-            .bearer_auth(id_token)
-            .send()
-            .map_err(|e| RetryableError::Retryable(format!("network error: {e}")))?;
-        let status = resp.status();
-        if !status.is_success() {
-            let body = resp.text().unwrap_or_default();
-            return Err(classify_status(status, body));
-        }
-        resp.json::<Value>()
-            .map_err(|e| RetryableError::Fatal(format!("bad response: {e}")))
-    })
-    .map_err(|e| format!("pull failed: {e}"))?;
-
-    let documents = json
-        .get("documents")
-        .and_then(|d| d.as_array())
-        .cloned()
-        .unwrap_or_default();
+    let documents = list_all_documents(id_token, &firestore_base(uid), "")
+        .map_err(|e| format!("pull failed: {e}"))?;
 
     let total = documents.len();
     let mut applied = 0;
@@ -586,6 +650,8 @@ fn pull_entries(app: &AppHandle, id_token: &str, uid: &str) -> Result<usize, Str
             category: get_str(&fields, "category").unwrap_or_else(vault::default_category),
             fields_ct: get_str(&fields, "fields_ct"),
             fields_nonce: get_str(&fields, "fields_nonce"),
+            totp_ct: get_str(&fields, "totp_ct"),
+            totp_nonce: get_str(&fields, "totp_nonce"),
         };
 
         if vault::apply_remote_entry(app, &entry)? {

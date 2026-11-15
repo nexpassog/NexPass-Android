@@ -1,6 +1,6 @@
 [package]
 name = "nexpass"
-version = "6.0.1"
+version = "6.1.0"
 description = "NexPass — secure local credential vault"
 authors = ["Arabi Islam, MR. ARX <NexApp>"]
 edition = "2021"
@@ -15,6 +15,7 @@ tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-process = "2"
 tauri-plugin-nexpass-installer = { path = "../tauri-plugin-nexpass-installer" }
+tauri-plugin-nexpass-autofill = { path = "../tauri-plugin-nexpass-autofill" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
@@ -34,11 +35,21 @@ urlencoding = "2"
 rusqlite = { version = "0.31", features = ["bundled"] }
 uuid = { version = "1", features = ["v4"] }
 
+# TOTP (RFC 6238) 2FA codes stored on entries + HIBP k-anonymity breach check.
+sha1 = "0.10"
+hmac = "0.12"
+base32 = "0.5"
+# PKCE S256 challenge for the Google OAuth loopback flow.
+sha2 = "0.10"
+
 # Tray icon + window vibrancy have no Android/iOS equivalent — only
 # pulled in (and only compiled) for desktop targets.
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 window-vibrancy = "0.5"
 tauri = { version = "2", features = ["tray-icon"] }
+# Windows Hello unlock gate — desktop targets of this crate (Android
+# builds exclude it; the lib.rs stub covers those).
+windows = { version = "0.58", features = ["Foundation", "Security_Credentials", "Security_Cryptography", "Storage_Streams", "Win32_Foundation", "Win32_Security_Credentials", "Win32_System_Com", "Win32_System_WinRT"] }
 
 # Biometric unlock (fingerprint / face) — Android + iOS only, no desktop equivalent.
 [target.'cfg(any(target_os = "android", target_os = "ios"))'.dependencies]

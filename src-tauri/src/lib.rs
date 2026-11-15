@@ -2,13 +2,40 @@
 mod biometric_store;
 mod crypto;
 mod google_auth;
+mod health;
+mod pwned;
 mod profile_store;
 mod secrets;
 mod settings;
 mod storage;
 mod sync;
+mod totp;
 mod updater;
 mod vault;
+// Windows-unlock commands exist for command-registry parity; on mobile
+// they're stubs (the real implementation lives in desktop's windows_hello.rs).
+#[cfg(all(windows, not(any(target_os = "android", target_os = "ios"))))]
+mod windows_hello;
+#[cfg(not(all(windows, not(any(target_os = "android", target_os = "ios")))))]
+mod windows_hello {
+    #[derive(serde::Serialize)]
+    pub struct HelloStatus {
+        pub enrolled: bool,
+        pub hello_available: bool,
+    }
+    pub fn enroll(_pin: &str) -> Result<HelloStatus, String> {
+        Err("Windows unlock is only available on Windows".to_string())
+    }
+    pub fn retrieve_pin() -> Result<String, String> {
+        Err("Windows unlock is only available on Windows".to_string())
+    }
+    pub fn status() -> Result<HelloStatus, String> {
+        Ok(HelloStatus { enrolled: false, hello_available: false })
+    }
+    pub fn disable() -> Result<(), String> {
+        Ok(())
+    }
+}
 
 use std::sync::Mutex;
 #[cfg(desktop)]
@@ -23,6 +50,79 @@ struct SessionState {
 }
 type Session = Mutex<SessionState>;
 
+/// Wrong-PIN throttling state — enforced in Rust so the counter survives
+/// an app restart (persisted) and can't be bypassed by reloading the UI.
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct ThrottleState {
+    consecutive_failures: u32,
+    /// Unix seconds until which further unlock attempts are refused.
+    lock_until: i64,
+}
+
+impl ThrottleState {
+    fn path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+        let dir = app
+            .path()
+            .app_data_dir()
+            .map_err(|e| format!("could not resolve app data dir: {e}"))?;
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        Ok(dir.join("throttle.json"))
+    }
+
+    fn load(app: &AppHandle) -> ThrottleState {
+        std::fs::read_to_string(Self::path(app).unwrap_or_default())
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default()
+    }
+
+    fn save(&self, app: &AppHandle) -> Result<(), String> {
+        let json = serde_json::to_string(self).map_err(|e| e.to_string())?;
+        std::fs::write(Self::path(app)?, json).map_err(|e| e.to_string())
+    }
+
+    /// Free tries before locking, then 30s doubling per extra failure,
+    /// capped at 15 minutes.
+    fn register_failure(&mut self, app: &AppHandle) -> Result<UnlockResult, String> {
+        self.consecutive_failures += 1;
+        let over = self.consecutive_failures.saturating_sub(4);
+        let now = now_unix();
+        if over >= 1 {
+            let secs = (30u64.saturating_mul(1u64 << (over - 1).min(5))).min(15 * 60);
+            self.lock_until = now + secs as i64;
+            let _ = self.save(app);
+            Ok(UnlockResult { unlocked: false, lock_secs: secs, tries_left: 0 })
+        } else {
+            let _ = self.save(app);
+            Ok(UnlockResult {
+                unlocked: false,
+                lock_secs: 0,
+                tries_left: 4 - self.consecutive_failures,
+            })
+        }
+    }
+
+    fn remaining_lock(&self) -> i64 {
+        (self.lock_until - now_unix()).max(0)
+    }
+}
+
+fn now_unix() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+#[derive(serde::Serialize)]
+struct UnlockResult {
+    unlocked: bool,
+    /// Seconds the unlock is locked out for (0 when not locked).
+    lock_secs: u64,
+    /// Free tries remaining before a lockout starts.
+    tries_left: u32,
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let mut builder = tauri::Builder::default()
@@ -36,6 +136,10 @@ pub fn run() {
         // Real Tauri plugin (Kotlin @TauriPlugin) that installs a
         // downloaded update APK — see tauri-plugin-nexpass-installer.
         .plugin(tauri_plugin_nexpass_installer::init())
+        // Android Autofill provider + home-screen widget (Kotlin plugin;
+        // the OS binds the service directly, the plugin exposes the
+        // enable/status commands the Settings UI uses).
+        .plugin(tauri_plugin_nexpass_autofill::init())
         .manage(Session::default());
 
     // Biometric prompt (fingerprint / face) — Android + iOS only, no
@@ -164,7 +268,16 @@ pub fn run() {
             get_profile,
             save_profile,
             set_profile_avatar,
-            clear_profile_avatar
+            clear_profile_avatar,
+            generate_totp,
+            check_password_breach,
+            vault_health,
+            list_conflicts,
+            clear_conflict,
+            hello_enroll,
+            hello_unlock,
+            hello_status,
+            hello_disable
         ])
         .run(tauri::generate_context!())
         .expect("error while running NexPass");
@@ -211,18 +324,37 @@ fn setup_pin(app: AppHandle, session: State<Session>, pin: String) -> Result<(),
         let _ = sync::push_cloud_key_material(&app, &material);
     }
     session.lock().map_err(|_| "lock poisoned".to_string())?.key = Some(key);
+    let mut throttle = ThrottleState::load(&app);
+    throttle.consecutive_failures = 0;
+    throttle.lock_until = 0;
+    let _ = throttle.save(&app);
     Ok(())
 }
 
+/// Backend-enforced wrong-PIN throttling (persists across restarts).
 #[tauri::command]
-fn unlock_with_pin(app: AppHandle, session: State<Session>, pin: String) -> Result<bool, String> {
+fn unlock_with_pin(app: AppHandle, session: State<Session>, pin: String) -> Result<UnlockResult, String> {
+    let mut throttle = ThrottleState::load(&app);
+
+    let remaining = throttle.remaining_lock();
+    if remaining > 0 {
+        return Ok(UnlockResult {
+            unlocked: false,
+            lock_secs: remaining as u64,
+            tries_left: 0,
+        });
+    }
+
     let material = storage::load_master(&app)?;
     match crypto::unlock(&pin, &material) {
         Ok(key) => {
             session.lock().map_err(|_| "lock poisoned".to_string())?.key = Some(key);
-            Ok(true)
+            throttle.consecutive_failures = 0;
+            throttle.lock_until = 0;
+            let _ = throttle.save(&app);
+            Ok(UnlockResult { unlocked: true, lock_secs: 0, tries_left: 4 })
         }
-        Err(_) => Ok(false),
+        Err(_) => throttle.register_failure(&app),
     }
 }
 
@@ -274,6 +406,9 @@ fn restore_entry(app: AppHandle, id: String) -> Result<(), String> {
 
 #[tauri::command]
 fn permanently_delete_entry(app: AppHandle, id: String) -> Result<(), String> {
+    // Queue first (survives a failed network call), then try to delete
+    // the cloud document immediately; on failure every sync retries.
+    vault::enqueue_pending_delete(&app, &id)?;
     vault::permanently_delete_entry(&app, &id)?;
     let _ = sync::delete_remote_entry(&app, &id);
     Ok(())
@@ -495,7 +630,7 @@ fn import_vault(app: AppHandle, session: State<Session>, file_content: String, p
     let mut count = 0;
     for e in entries {
         vault::add_entry(&app, key, vault::EntryInput {
-            title: e.title, username: e.username, password: e.password, url: e.url, notes: e.notes, category: e.category, fields_json: e.fields_json,
+            title: e.title, username: e.username, password: e.password, url: e.url, notes: e.notes, category: e.category, fields_json: e.fields_json, totp_secret: None,
         })?;
         count += 1;
     }
@@ -623,4 +758,81 @@ fn clear_profile_avatar(app: AppHandle) -> Result<(), String> {
     let mut p = profile_store::load(&app);
     p.avatar_path = None;
     profile_store::save(&app, &p)
+}
+
+// --- TOTP (2FA) ---
+
+/// Live TOTP code for an entry's stored secret (6 digits + seconds left).
+#[tauri::command]
+fn generate_totp(secret: String) -> Result<(String, u32), String> {
+    if secret.trim().is_empty() {
+        return Err("no TOTP secret on this entry".to_string());
+    }
+    totp::generate(&secret, None)
+}
+
+// --- Breach check (HIBP k-anonymity) ---
+
+/// Checks ONE password against HIBP. Only a SHA-1 prefix (5 hex chars of
+/// a hash) ever leaves the device — the password itself never does.
+#[tauri::command]
+fn check_password_breach(password: String) -> Result<i64, String> {
+    if password.is_empty() {
+        return Ok(0);
+    }
+    pwned::breach_count(&password)
+}
+
+// --- Password health audit ---
+
+/// Full vault audit. Passwords are analyzed in Rust; only flags and
+/// aggregate stats reach the frontend. `check_breaches: false` skips
+/// the network calls (instant, offline-safe pass for the UI).
+#[tauri::command]
+fn vault_health(app: AppHandle, session: State<Session>, check_breaches: bool) -> Result<health::HealthReport, String> {
+    let s = session.lock().map_err(|_| "lock poisoned".to_string())?;
+    health::audit(&app, require_key(&s)?, check_breaches)
+}
+
+// --- Sync conflict review ---
+
+#[tauri::command]
+fn list_conflicts(app: AppHandle, session: State<Session>) -> Result<Vec<vault::ConflictBackup>, String> {
+    let s = session.lock().map_err(|_| "lock poisoned".to_string())?;
+    vault::list_conflict_backups(&app, require_key(&s)?)
+}
+
+#[tauri::command]
+fn clear_conflict(app: AppHandle, seq: i64) -> Result<(), String> {
+    vault::clear_conflict_backup(&app, seq)
+}
+
+// --- Windows unlock (stub on mobile; parity with desktop command set) ---
+
+#[tauri::command]
+fn hello_enroll(pin: String) -> Result<windows_hello::HelloStatus, String> {
+    windows_hello::enroll(&pin)
+}
+
+#[tauri::command]
+fn hello_unlock(app: AppHandle, session: State<Session>) -> Result<bool, String> {
+    let pin = windows_hello::retrieve_pin()?;
+    let material = storage::load_master(&app)?;
+    match crypto::unlock(&pin, &material) {
+        Ok(key) => {
+            session.lock().map_err(|_| "lock poisoned".to_string())?.key = Some(key);
+            Ok(true)
+        }
+        Err(_) => Err("Saved PIN no longer matches this vault".to_string()),
+    }
+}
+
+#[tauri::command]
+fn hello_status() -> Result<windows_hello::HelloStatus, String> {
+    windows_hello::status()
+}
+
+#[tauri::command]
+fn hello_disable() -> Result<(), String> {
+    windows_hello::disable()
 }

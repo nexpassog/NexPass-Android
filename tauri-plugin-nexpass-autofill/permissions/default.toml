@@ -1,0 +1,3 @@
+[default]
+description = "Default permissions for the nexpass-autofill plugin"
+permissions = ["allow-open-autofill-settings", "allow-autofill-status"]

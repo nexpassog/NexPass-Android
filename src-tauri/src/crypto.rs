@@ -13,7 +13,7 @@ use argon2::{
     Argon2,
 };
 use serde::{Deserialize, Serialize};
-use zeroize::{Zeroize, ZeroizeOnDrop};
+use zeroize::ZeroizeOnDrop;
 
 /// A derived encryption key, held in memory only while the vault is
 /// unlocked. Automatically wiped from memory when dropped.

@@ -1,0 +1,3 @@
+identifier = "allow-open-autofill-settings"
+description = "Enables the open_autofill_settings command"
+commands.allow = ["open_autofill_settings"]

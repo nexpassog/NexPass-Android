@@ -1,0 +1,3 @@
+identifier = "allow-autofill-status"
+description = "Enables the autofill_status command"
+commands.allow = ["autofill_status"]

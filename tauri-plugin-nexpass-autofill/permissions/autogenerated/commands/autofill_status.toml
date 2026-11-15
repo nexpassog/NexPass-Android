@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-autofill-status"
+description = "Enables the autofill_status command without any pre-configured scope."
+commands.allow = ["autofill_status"]
+
+[[permission]]
+identifier = "deny-autofill-status"
+description = "Denies the autofill_status command without any pre-configured scope."
+commands.deny = ["autofill_status"]
