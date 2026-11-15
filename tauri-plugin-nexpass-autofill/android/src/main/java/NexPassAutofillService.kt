@@ -51,7 +51,7 @@ class NexPassAutofillService : AutofillService() {
                 val id = node.autofillId ?: return@forEachNode
                 val hints = node.autofillHints ?: return@forEachNode
                 val isUser = hints.any {
-                    it == View.AUTOFILL_HINT_USER_NAME || it == View.AUTOFILL_HINT_EMAIL_ADDRESS
+                    it == View.AUTOFILL_HINT_USERNAME || it == View.AUTOFILL_HINT_EMAIL_ADDRESS
                 }
                 val isPass = hints.contains(View.AUTOFILL_HINT_PASSWORD)
                 if (isUser || isPass) {
@@ -75,11 +75,10 @@ class NexPassAutofillService : AutofillService() {
                 return
             }
 
-            val targetPackage = request.fillContexts
-                .lastOrNull()
-                ?.windowNodeCount?.let { structure.getWindowNodeAt(it - 1) }?.title ?: ""
-
-            val relevant = pickEntries(entries, targetPackage).ifEmpty { entries.take(5) }
+            // The os doesn't tell us the target app's package here in a
+            // reliably readable way, so show the five most relevant
+            // entries (most recently updated first is available upstream).
+            val relevant = entries.take(5)
 
             val response = FillResponse.Builder()
             var added = 0
@@ -103,16 +102,6 @@ class NexPassAutofillService : AutofillService() {
 
     private class ViewNodeInfo(val isUser: Boolean, val isPass: Boolean)
 
-    /** Prefer entries whose saved domain looks related to the app being filled. */
-    private fun pickEntries(entries: List<VaultCrypto.VaultEntry>, targetPackage: String): List<VaultCrypto.VaultEntry> {
-        if (targetPackage.isBlank()) return emptyList()
-        val pkg = targetPackage.lowercase()
-        return entries.filter { e ->
-            val host = e.url?.substringAfter("://")?.substringBefore("/")?.lowercase() ?: ""
-            host.isNotEmpty() && (pkg.contains(host.substringBefore(".")) || host.contains(pkg.substringBefore(".")))
-        }
-    }
-
     private fun buildDataset(
         contexts: List<FillContext>,
         wanted: List<Pair<AutofillId, ViewNodeInfo>>,
@@ -127,7 +116,10 @@ class NexPassAutofillService : AutofillService() {
             setTextViewText(R.id.autofill_username, usernameValue.ifEmpty { entry.category })
         }
 
-        val builder = Dataset.Builder()
+        // Dataset.Builder(RemoteViews) is the (deprecated but correct)
+        // way to give a dataset-level menu presentation — there is no
+        // setPresentation() method on the builder.
+        val builder = Dataset.Builder(presentation)
         var filled = 0
         for ((id, info) in wanted) {
             when {
@@ -138,7 +130,7 @@ class NexPassAutofillService : AutofillService() {
             filled++
         }
         if (filled == 0) return null
-        return builder.setPresentation(presentation).build()
+        return builder.build()
     }
 
     private fun buildSaveInfo(wanted: List<Pair<AutofillId, ViewNodeInfo>>): SaveInfo {
@@ -159,7 +151,7 @@ class NexPassAutofillService : AutofillService() {
             setTextViewText(R.id.autofill_username, "")
         }
         return FillResponse.Builder()
-            .addDataset(Dataset.Builder().setPresentation(presentation).build())
+            .addDataset(Dataset.Builder(presentation).build())
             .setSaveInfo(
                 SaveInfo.Builder(
                     SaveInfo.SAVE_DATA_TYPE_USERNAME or SaveInfo.SAVE_DATA_TYPE_PASSWORD,
