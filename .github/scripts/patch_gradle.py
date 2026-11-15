@@ -49,6 +49,18 @@ content = content.replace(
     1,
 )
 
+# The nexpass-autofill plugin pulls in BouncyCastle (Argon2id) whose jar
+# ships the same META-INF/versions/9/OSGI-INF/MANIFEST.MF entry as
+# jspecify — merge duplicate resource entries instead of failing.
+content = content.replace(
+    "android {",
+    '''android {
+    packaging {
+        resources.excludes += "META-INF/versions/9/OSGI-INF/MANIFEST.MF"
+    }''',
+    1,
+)
+
 with open(PATH, "w") as f:
     f.write(content)
 
