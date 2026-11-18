@@ -899,6 +899,12 @@ function App() {
       const message = String(e);
       if (message.includes("VAULT_KEY_MISMATCH")) {
         setKeyMismatch(true);
+      } else if (message.includes("SESSION_EXPIRED")) {
+        // The stored Google session is dead (revoked, or the OAuth client
+        // was deleted). The backend already cleared it — surface the
+        // sign-in card again instead of showing a dead account.
+        setGoogleSession(null);
+        showToast("Google session expired — please sign in again.", "error", 6000);
       } else {
         setSyncError(message);
         // Background/auto syncs (silent=true) fail quietly and often —

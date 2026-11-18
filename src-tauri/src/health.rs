@@ -7,9 +7,7 @@
 // but has no new access to the secrets themselves.
 
 use serde::Serialize;
-use tauri::AppHandle;
 
-use crate::crypto::VaultKey;
 use crate::pwned;
 use crate::vault;
 
@@ -73,14 +71,17 @@ pub struct HealthReport {
 /// Entries older than this (never updated since creation) are flagged.
 const OLD_AFTER_SECS: i64 = 365 * 24 * 3600;
 
-pub fn audit(app: &AppHandle, key: &VaultKey, check_breaches: bool) -> Result<HealthReport, String> {
-    let entries = vault::export_all(app, key)?;
+/// Analyzes already-decrypted entries. Deliberately does NOT touch the
+/// session lock or the vault — the caller decrypts once under the lock,
+/// releases it, then hands the plaintext over so the (slow, networked)
+/// breach checks never block other vault operations.
+pub fn analyze(entries: &[vault::EntryFull], check_breaches: bool) -> Result<HealthReport, String> {
     let now = now_unix();
 
     // Count password reuse across entries (exact match after decryption).
     let mut by_password: std::collections::HashMap<&str, Vec<&vault::EntryFull>> =
         std::collections::HashMap::new();
-    for e in &entries {
+    for e in entries {
         if !e.password.is_empty() {
             by_password.entry(e.password.as_str()).or_default().push(e);
         }
@@ -121,7 +122,7 @@ pub fn audit(app: &AppHandle, key: &VaultKey, check_breaches: bool) -> Result<He
         entries: Vec::new(),
     };
 
-    for e in &entries {
+    for e in entries {
         if e.password.is_empty() {
             continue; // secure-note style entries have no password to audit
         }

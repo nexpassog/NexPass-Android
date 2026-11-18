@@ -136,7 +136,16 @@ pub fn get_refreshed_session(app: &AppHandle) -> Result<(String, String), String
         }
     }
 
-    let (new_id_token, new_refresh_token) = refresh_id_token(&session.refresh_token)?;
+    let (new_id_token, new_refresh_token) = refresh_id_token(&session.refresh_token).map_err(|e| {
+        if e.contains("SESSION_EXPIRED") {
+            // Dead session (revoked / client deleted) — remove the file so
+            // the UI's sign-in state reflects reality and stops retrying.
+            let _ = storage::clear_google_session(app);
+            "SESSION_EXPIRED: your Google session ended — please sign in again".to_string()
+        } else {
+            e
+        }
+    })?;
     session.id_token = new_id_token.clone();
     session.refresh_token = new_refresh_token;
     storage::save_google_session(app, &session)?;
@@ -463,6 +472,20 @@ fn refresh_id_token(refresh_token: &str) -> Result<(String, String), String> {
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().unwrap_or_default();
+            // A revoked/expired/dead refresh token is NOT retryable —
+            // retrying the same request can never succeed. Surface it
+            // distinctly so the caller can clear the session and the UI
+            // can prompt for a fresh sign-in. This is exactly what
+            // happens when the OAuth client is deleted or the user
+            // revokes the app.
+            let fatal_auth = body.contains("TOKEN_EXPIRED")
+                || body.contains("INVALID_CREDENTIALS")
+                || body.contains("EMAIL_NOT_FOUND")
+                || body.contains("USER_DISABLED")
+                || body.contains("invalid_grant");
+            if fatal_auth {
+                return Err(RetryableError::Fatal("SESSION_EXPIRED".to_string()));
+            }
             return Err(classify_status(status, body));
         }
         resp.json::<Value>()

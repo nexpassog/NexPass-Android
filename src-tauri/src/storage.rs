@@ -87,6 +87,18 @@ pub fn load_google_session(app: &AppHandle) -> Result<Option<FirebaseSession>, S
     Ok(Some(session))
 }
 
+/// Removes the stored session — used when Google definitively rejects
+/// the refresh token (revoked / expired / client deleted), because the
+/// only recovery is a fresh sign-in and a dead session blocks every
+/// sync until then.
+pub fn clear_google_session(app: &AppHandle) -> Result<(), String> {
+    let path = google_session_path(app)?;
+    if path.exists() {
+        fs::remove_file(path).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 // --- Smart sync metadata ---
 // A small local snapshot of "what the cloud looked like last time we
 // checked", so the app can tell — without doing a full push/pull —

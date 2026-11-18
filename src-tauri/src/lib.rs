@@ -785,13 +785,23 @@ fn check_password_breach(password: String) -> Result<i64, String> {
 
 // --- Password health audit ---
 
-/// Full vault audit. Passwords are analyzed in Rust; only flags and
-/// aggregate stats reach the frontend. `check_breaches: false` skips
-/// the network calls (instant, offline-safe pass for the UI).
+/// Full vault audit. Runs on the blocking pool; decrypts under the
+/// session lock, releases it, then does the (potentially slow, networked)
+/// breach checks without holding anything else up.
 #[tauri::command]
-fn vault_health(app: AppHandle, session: State<Session>, check_breaches: bool) -> Result<health::HealthReport, String> {
-    let s = session.lock().map_err(|_| "lock poisoned".to_string())?;
-    health::audit(&app, require_key(&s)?, check_breaches)
+async fn vault_health(app: AppHandle, check_breaches: bool) -> Result<health::HealthReport, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let entries = {
+            let session = app
+                .try_state::<Session>()
+                .ok_or_else(|| "no session".to_string())?;
+            let s = session.lock().map_err(|_| "lock poisoned".to_string())?;
+            vault::export_all(&app, require_key(&s)?)?
+        };
+        health::analyze(&entries, check_breaches)
+    })
+    .await
+    .map_err(|e| format!("health task panicked: {e}"))?
 }
 
 // --- Sync conflict review ---
