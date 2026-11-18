@@ -782,6 +782,17 @@ pub fn mark_synced(app: &AppHandle, ids_and_ts: &[(String, i64)]) -> Result<(), 
     tx.commit().map_err(|e| e.to_string())
 }
 
+/// Clears synced_at on every entry so the next sync re-pushes the whole
+/// vault — used when this device's key becomes the account's canonical
+/// key (publish_local_vault_key): everything must be re-uploaded under
+/// the new key.
+pub fn mark_all_entries_dirty(app: &AppHandle) -> Result<(), String> {
+    let conn = open_db(app)?;
+    conn.execute("UPDATE entries SET synced_at = NULL", [])
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
 /// Writes a remote entry into the local DB only if it's newer than
 /// what's already there (or not present at all) — last-write-wins
 /// conflict resolution with a safety net: if the local row it's about

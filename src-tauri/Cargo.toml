@@ -1,6 +1,6 @@
 [package]
 name = "nexpass"
-version = "6.1.1"
+version = "6.1.2"
 description = "NexPass — secure local credential vault"
 authors = ["Arabi Islam, MR. ARX <NexApp>"]
 edition = "2021"

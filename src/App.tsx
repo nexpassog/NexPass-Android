@@ -92,6 +92,7 @@ interface SyncStatus {
 }
 
 interface VaultKeyDebugInfo {
+  signed_in: boolean;
   local_salt_prefix: string | null;
   cloud_salt_prefix: string | null;
   salts_match: boolean;
@@ -548,6 +549,9 @@ function App() {
   const [syncStatusInfo, setSyncStatusInfo] = useState<SyncStatus | null>(null);
   const [keyMismatch, setKeyMismatch] = useState(false);
   const [reconcilePin, setReconcilePin] = useState("");
+  // Which way to resolve a vault-key mismatch: adopt the cloud vault
+  // (other device's PIN) or publish THIS device's vault to the account.
+  const [reconcileMode, setReconcileMode] = useState<"adopt" | "publish">("adopt");
   const [reconcileBusy, setReconcileBusy] = useState(false);
   const [reconcileError, setReconcileError] = useState("");
   const [debugInfo, setDebugInfo] = useState<VaultKeyDebugInfo | null>(null);
@@ -863,17 +867,25 @@ function App() {
 
   async function handleReconcileVaultKey() {
     if (reconcilePin.length < 4) {
-      setReconcileError("Enter the PIN this account's vault was set up with.");
+      setReconcileError("Enter the PIN (at least 4 digits).");
       return;
     }
     setReconcileBusy(true);
     setReconcileError("");
     try {
-      await invoke("adopt_cloud_vault_key", { pin: reconcilePin });
-      setKeyMismatch(false);
-      setReconcilePin("");
-      showToast("Vault key synced — pulling this account's data…", "success");
-      await handleSyncNow(false);
+      if (reconcileMode === "adopt") {
+        await invoke("adopt_cloud_vault_key", { pin: reconcilePin });
+        setKeyMismatch(false);
+        setReconcilePin("");
+        showToast("Vault key synced — pulling this account's data…", "success");
+        await handleSyncNow(false);
+      } else {
+        await invoke("publish_local_vault_key", { pin: reconcilePin });
+        setKeyMismatch(false);
+        setReconcilePin("");
+        showToast("This device's vault is now the account vault — pushing everything…", "success");
+        await handleSyncNow(false);
+      }
     } catch (e) {
       setReconcileError(String(e));
     } finally {
@@ -2112,10 +2124,16 @@ function App() {
                           <div className="diagnostic-box">
                             Account: {debugInfo.google_email ?? "not signed in"}<br />
                             Local salt: {debugInfo.local_salt_prefix ?? "none"}<br />
-                            Cloud salt: {debugInfo.cloud_salt_prefix ?? "none"}<br />
-                            <strong style={{ color: debugInfo.salts_match ? "var(--success)" : "var(--error)" }}>
-                              {debugInfo.salts_match ? "✓ MATCH" : "✗ MISMATCH"}
-                            </strong>
+                            {!debugInfo.signed_in ? (
+                              <strong style={{ color: "#facc15" }}>Not signed in — sign in to compare with the cloud vault.</strong>
+                            ) : (
+                              <>
+                                Cloud salt: {debugInfo.cloud_salt_prefix ?? "none"}<br />
+                                <strong style={{ color: debugInfo.salts_match ? "var(--success)" : "var(--error)" }}>
+                                  {debugInfo.salts_match ? "✓ MATCH" : "✗ MISMATCH — use the reconcile dialog (shown at sign-in) to fix"}
+                                </strong>
+                              </>
+                            )}
                           </div>
                         )}
                       </div>
@@ -2761,11 +2779,21 @@ function App() {
       {keyMismatch && (
         <div className="confirm-overlay">
           <div className="confirm-box" onClick={(e) => e.stopPropagation()}>
-            <p>
-              This Google account's vault was already set up with a different PIN on another
-              device. Enter <strong>that device's PIN</strong> to sync this device with it.
-              This device's local entries (if any) will be replaced by the account's synced data.
-            </p>
+            {reconcileMode === "adopt" ? (
+              <p>
+                This Google account's vault was already set up with a different PIN on another
+                device (e.g. your desktop). Enter <strong>that device's PIN</strong> — the PIN you
+                unlock NexPass with there — to sync this device with it.
+                This device's local entries (if any) will be replaced by the account's synced data.
+              </p>
+            ) : (
+              <p>
+                Make <strong>this device's vault</strong> the account's vault. Enter{" "}
+                <strong>this device's PIN</strong> to confirm. The cloud copy is replaced by this
+                device's data — the other device will be asked to re-sync with this PIN on its
+                next sync, and its local entries will be replaced.
+              </p>
+            )}
             <input
               type="password"
               inputMode="numeric"
@@ -2775,11 +2803,11 @@ function App() {
                 setReconcilePin(e.target.value.replace(/\D/g, ""));
                 setReconcileError("");
               }}
-              placeholder="Enter that device's PIN"
+              placeholder={reconcileMode === "adopt" ? "Enter the other device's PIN" : "Enter this device's PIN"}
               autoFocus
             />
             {reconcileError && <p className="error-text">{friendlyError(reconcileError)}</p>}
-            <div className="settings-btn-group">
+            <div className="settings-btn-group" style={{ flexWrap: "wrap" }}>
               <button
                 className="settings-btn"
                 onClick={() => {
@@ -2790,8 +2818,27 @@ function App() {
               >
                 Cancel
               </button>
-              <button className="settings-btn" disabled={reconcileBusy} onClick={handleReconcileVaultKey}>
-                {reconcileBusy ? "Verifying…" : "Sync this device"}
+              <button
+                className="settings-btn"
+                disabled={reconcileBusy}
+                onClick={() => {
+                  setReconcileMode((m) => (m === "adopt" ? "publish" : "adopt"));
+                  setReconcilePin("");
+                  setReconcileError("");
+                }}
+              >
+                {reconcileMode === "adopt" ? "Use this device's vault instead" : "Use the cloud vault instead"}
+              </button>
+              <button
+                className={`settings-btn ${reconcileMode === "publish" ? "danger" : ""}`}
+                disabled={reconcileBusy || reconcilePin.length < 4}
+                onClick={handleReconcileVaultKey}
+              >
+                {reconcileBusy
+                  ? "Verifying…"
+                  : reconcileMode === "adopt"
+                    ? "Sync this device with the cloud"
+                    : "Make this device the account vault"}
               </button>
             </div>
           </div>

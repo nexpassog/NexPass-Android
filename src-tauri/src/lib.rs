@@ -246,6 +246,7 @@ pub fn run() {
             check_sync_status,
             check_cloud_vault_key,
             adopt_cloud_vault_key,
+            publish_local_vault_key,
             debug_vault_key_info,
             backup_to_cloud,
             restore_from_cloud,
@@ -502,12 +503,41 @@ fn adopt_cloud_vault_key(app: AppHandle, session: State<Session>, pin: String) -
     Ok(())
 }
 
+/// The OTHER direction of a "mismatch": make THIS device's vault the
+/// account's canonical one. Verifies the caller knows this device's PIN
+/// (intent guard), publishes the local key material over the cloud's,
+/// wipes the cloud entries (ciphertext under the OLD key), and marks
+/// every local entry dirty so the next sync pushes everything under the
+/// new key. The other device must then adopt with THIS device's PIN.
+#[tauri::command]
+async fn publish_local_vault_key(app: AppHandle, pin: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let local = storage::load_master(&app)?;
+        let key = crypto::unlock(&pin, &local)
+            .map_err(|_| "That's not this device's PIN — the vault stays as-is".to_string())?;
+
+        sync::push_cloud_key_material(&app, &local)?;
+        sync::delete_all_remote(&app)?;
+        vault::mark_all_entries_dirty(&app)?;
+
+        if let Some(session) = app.try_state::<Session>() {
+            if let Ok(mut guard) = session.lock() {
+                guard.key = Some(key);
+            }
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("re-key task panicked: {e}"))?
+}
+
 /// Diagnostic only — shows exactly what this device's local salt and
 /// the account's cloud salt currently are (short prefixes, not the
 /// full secret material) so a real mismatch can be seen directly
 /// instead of inferred from symptoms.
 #[derive(serde::Serialize)]
 struct VaultKeyDebugInfo {
+    signed_in: bool,
     local_salt_prefix: Option<String>,
     cloud_salt_prefix: Option<String>,
     salts_match: bool,
@@ -520,9 +550,10 @@ fn debug_vault_key_info(app: AppHandle) -> Result<VaultKeyDebugInfo, String> {
     let local_salt_prefix = local.as_ref().map(|m| m.salt.chars().take(12).collect::<String>());
 
     let google = storage::load_google_session(&app)?;
+    let signed_in = google.is_some();
     let google_email = google.as_ref().map(|g| g.email.clone());
 
-    let cloud_salt_prefix = if google.is_some() {
+    let cloud_salt_prefix = if signed_in {
         sync::fetch_cloud_key_material(&app)
             .ok()
             .flatten()
@@ -536,7 +567,7 @@ fn debug_vault_key_info(app: AppHandle) -> Result<VaultKeyDebugInfo, String> {
         _ => false,
     };
 
-    Ok(VaultKeyDebugInfo { local_salt_prefix, cloud_salt_prefix, salts_match, google_email })
+    Ok(VaultKeyDebugInfo { signed_in, local_salt_prefix, cloud_salt_prefix, salts_match, google_email })
 }
 
 // These are `async fn` + `spawn_blocking` rather than plain sync
