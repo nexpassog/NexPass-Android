@@ -37,7 +37,7 @@ function friendlyError(raw: string): string {
 }
 
 const APP_NAME = "NexPass";
-const APP_VERSION = "5.0.5";
+const APP_VERSION = "6.1.3";
 const APP_ID = "068691";
 const APP_AUTHOR = "NexApp";
 const APP_AUTHOR_URL = "https://nexappog.vercel.app/";
