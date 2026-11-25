@@ -16,6 +16,7 @@ tauri-plugin-fs = "2"
 tauri-plugin-process = "2"
 tauri-plugin-nexpass-installer = { path = "../tauri-plugin-nexpass-installer" }
 tauri-plugin-nexpass-autofill = { path = "../tauri-plugin-nexpass-autofill" }
+tauri-plugin-nexpass-google-signin = { path = "../tauri-plugin-nexpass-google-signin" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

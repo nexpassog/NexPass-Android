@@ -61,6 +61,15 @@ content = content.replace(
     1,
 )
 
+# The nexpass-google-signin plugin may also have resource conflicts
+content = content.replace(
+    "packaging {",
+    '''packaging {
+        resources.excludes += "META-INF/versions/9/OSGI-INF/MANIFEST.MF"
+    }''',
+    1,
+)
+
 with open(PATH, "w") as f:
     f.write(content)
 

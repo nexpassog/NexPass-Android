@@ -43,6 +43,7 @@ use tauri::menu::{Menu, MenuItem};
 #[cfg(desktop)]
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
+use tauri_plugin_nexpass_google_signin::NexpassGoogleSigninExt;
 
 #[derive(Default)]
 struct SessionState {
@@ -140,6 +141,9 @@ pub fn run() {
         // the OS binds the service directly, the plugin exposes the
         // enable/status commands the Settings UI uses).
         .plugin(tauri_plugin_nexpass_autofill::init())
+        // Native Android Google Sign-In using Google Identity Services
+        // (account picker in-app, no browser redirect).
+        .plugin(tauri_plugin_nexpass_google_signin::init())
         .manage(Session::default());
 
     // Biometric prompt (fingerprint / face) — Android + iOS only, no
@@ -430,18 +434,24 @@ struct GoogleSignInResult {
 
 #[tauri::command]
 async fn google_sign_in(app: AppHandle) -> Result<GoogleSignInResult, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let session = google_auth::sign_in_with_google(&app)?;
-        storage::save_google_session(&app, &session)?;
-        Ok(GoogleSignInResult {
-            email: session.email,
-            local_id: session.local_id,
-            display_name: session.display_name,
-            photo_url: session.photo_url,
-        })
+    // Use native Android Google Sign-In plugin
+    let result = app.nexpass_google_signin().sign_in().await
+        .map_err(|e| format!("Native Google Sign-In failed: {e}"))?;
+    
+    let user = result.user;
+    
+    // Convert to Firebase session using the ID token
+    let firebase_session = google_auth::exchange_id_token_for_firebase_session(&user.id_token)
+        .map_err(|e| format!("Firebase sign-in failed: {e}"))?;
+    
+    storage::save_google_session(&app, &firebase_session)?;
+    
+    Ok(GoogleSignInResult {
+        email: firebase_session.email,
+        local_id: firebase_session.local_id,
+        display_name: firebase_session.display_name,
+        photo_url: firebase_session.photo_url,
     })
-    .await
-    .map_err(|e| format!("sign-in task panicked: {e}"))?
 }
 
 #[tauri::command]
@@ -671,7 +681,10 @@ fn import_vault(app: AppHandle, session: State<Session>, file_content: String, p
 /// Wipes ALL local data (vault, PIN, Google session) — used for logout
 /// and as part of account deletion. Does not touch cloud data.
 #[tauri::command]
-fn logout_and_wipe(app: AppHandle, session: State<Session>) -> Result<(), String> {
+async fn logout_and_wipe(app: AppHandle, session: State<Session>) -> Result<(), String> {
+    // Sign out from native Google Sign-In
+    let _ = app.nexpass_google_signin().sign_out().await;
+    
     session.lock().map_err(|_| "lock poisoned".to_string())?.key = None;
     storage::wipe_all_local_data(&app)
 }

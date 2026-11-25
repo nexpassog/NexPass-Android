@@ -4,5 +4,5 @@
   "description": "Mobile-only permissions for NexPass's main window",
   "windows": ["main"],
   "platforms": ["iOS", "android"],
-  "permissions": ["biometric:allow-authenticate", "biometric:allow-status", "nexpass-autofill:default"]
+  "permissions": ["biometric:allow-authenticate", "biometric:allow-status", "nexpass-autofill:default", "nexpass-google-signin:default"]
 }
