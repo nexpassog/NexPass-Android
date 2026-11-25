@@ -49,6 +49,7 @@ jobs:
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           FIREBASE_API_KEY: ${{ secrets.FIREBASE_API_KEY }}
+          GOOGLE_ANDROID_CLIENT_ID: ${{ secrets.GOOGLE_ANDROID_CLIENT_ID }}
         run: |
           python3 - <<'PY'
           import json
@@ -66,6 +67,17 @@ jobs:
               encoding="utf-8",
           )
           PY
+
+      - name: Update Android Client ID in Google Sign-In plugin
+        env:
+          GOOGLE_ANDROID_CLIENT_ID: ${{ secrets.GOOGLE_ANDROID_CLIENT_ID }}
+        run: |
+          if [ -z "$GOOGLE_ANDROID_CLIENT_ID" ]; then
+            echo "ERROR: GOOGLE_ANDROID_CLIENT_ID secret not set"
+            exit 1
+          fi
+          sed -i "s|@GOOGLE_ANDROID_CLIENT_ID@|$GOOGLE_ANDROID_CLIENT_ID|g" tauri-plugin-nexpass-google-signin/android/src/main/res/values/strings.xml
+          echo "Updated Android Client ID in plugin"
 
       - name: Patch Android project for signed builds and in-app APK install
         run: |
