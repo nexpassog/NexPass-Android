@@ -7,9 +7,6 @@ use tauri::{
 use crate::models::*;
 use crate::error::{Error, Result};
 
-#[cfg(target_os = "android")]
-tauri::android_plugin_binding!(init_plugin_nexpass_google_signin);
-
 pub fn init<R: Runtime, C: DeserializeOwned>(
     _app: &AppHandle<R>,
     api: PluginApi<R, C>,
@@ -17,7 +14,7 @@ pub fn init<R: Runtime, C: DeserializeOwned>(
     #[cfg(target_os = "android")]
     let handle = api.register_android_plugin("com.nexapp.nexpass.googlesignin", "GoogleSignInPlugin")?;
     #[cfg(target_os = "ios")]
-    let handle = api.register_ios_plugin(init_plugin_nexpass_google_signin)?;
+    let handle = api.register_ios_plugin("nexpass-google-signin")?; // will need iOS plugin later
     Ok(NexpassGoogleSignin(handle))
 }
 
@@ -25,31 +22,27 @@ pub fn init<R: Runtime, C: DeserializeOwned>(
 pub struct NexpassGoogleSignin<R: Runtime>(PluginHandle<R>);
 
 impl<R: Runtime> NexpassGoogleSignin<R> {
-    pub async fn sign_in(&self) -> Result<SignInResponse> {
+    pub fn sign_in(&self) -> Result<SignInResponse> {
         self.0
             .run_mobile_plugin("signIn", ())
-            .await
             .map_err(|e| Error::PluginError(e.to_string()))
     }
 
-    pub async fn sign_out(&self) -> Result<()> {
+    pub fn sign_out(&self) -> Result<()> {
         self.0
             .run_mobile_plugin("signOut", ())
-            .await
             .map_err(|e| Error::PluginError(e.to_string()))
     }
 
-    pub async fn get_current_user(&self) -> Result<CurrentUserResponse> {
+    pub fn get_current_user(&self) -> Result<CurrentUserResponse> {
         self.0
             .run_mobile_plugin("getCurrentUser", ())
-            .await
             .map_err(|e| Error::PluginError(e.to_string()))
     }
 
-    pub async fn is_available(&self) -> Result<AvailabilityResponse> {
+    pub fn is_available(&self) -> Result<AvailabilityResponse> {
         self.0
             .run_mobile_plugin("isAvailable", ())
-            .await
             .map_err(|e| Error::PluginError(e.to_string()))
     }
 }

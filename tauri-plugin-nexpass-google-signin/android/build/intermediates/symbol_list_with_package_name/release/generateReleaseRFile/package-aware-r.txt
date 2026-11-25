@@ -1,0 +1,2 @@
+com.nexapp.nexpass.googlesignin
+string default_web_client_id

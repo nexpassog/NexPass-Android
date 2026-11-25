@@ -1,0 +1,58 @@
+-- Merging decision tree log ---
+manifest
+ADDED from D:\4. Projects\6. NexPass\Mobile\Android\tauri-plugin-nexpass-autofill\android\src\main\AndroidManifest.xml:2:1-32:12
+INJECTED from D:\4. Projects\6. NexPass\Mobile\Android\tauri-plugin-nexpass-autofill\android\src\main\AndroidManifest.xml:2:1-32:12
+	package
+		INJECTED from D:\4. Projects\6. NexPass\Mobile\Android\tauri-plugin-nexpass-autofill\android\src\main\AndroidManifest.xml
+	xmlns:android
+		ADDED from D:\4. Projects\6. NexPass\Mobile\Android\tauri-plugin-nexpass-autofill\android\src\main\AndroidManifest.xml:2:11-69
+application
+ADDED from D:\4. Projects\6. NexPass\Mobile\Android\tauri-plugin-nexpass-autofill\android\src\main\AndroidManifest.xml:4:5-31:19
+service#com.nexapp.nexpass.autofill.NexPassAutofillService
+ADDED from D:\4. Projects\6. NexPass\Mobile\Android\tauri-plugin-nexpass-autofill\android\src\main\AndroidManifest.xml:7:9-18:19
+	android:label
+		ADDED from D:\4. Projects\6. NexPass\Mobile\Android\tauri-plugin-nexpass-autofill\android\src\main\AndroidManifest.xml:10:13-36
+	android:exported
+		ADDED from D:\4. Projects\6. NexPass\Mobile\Android\tauri-plugin-nexpass-autofill\android\src\main\AndroidManifest.xml:9:13-36
+	android:permission
+		ADDED from D:\4. Projects\6. NexPass\Mobile\Android\tauri-plugin-nexpass-autofill\android\src\main\AndroidManifest.xml:11:13-74
+	android:name
+		ADDED from D:\4. Projects\6. NexPass\Mobile\Android\tauri-plugin-nexpass-autofill\android\src\main\AndroidManifest.xml:8:13-51
+intent-filter#action:name:android.service.autofill.AutofillService
+ADDED from D:\4. Projects\6. NexPass\Mobile\Android\tauri-plugin-nexpass-autofill\android\src\main\AndroidManifest.xml:12:13-14:29
+action#android.service.autofill.AutofillService
+ADDED from D:\4. Projects\6. NexPass\Mobile\Android\tauri-plugin-nexpass-autofill\android\src\main\AndroidManifest.xml:13:17-83
+	android:name
+		ADDED from D:\4. Projects\6. NexPass\Mobile\Android\tauri-plugin-nexpass-autofill\android\src\main\AndroidManifest.xml:13:25-80
+meta-data#android.autofill
+ADDED from D:\4. Projects\6. NexPass\Mobile\Android\tauri-plugin-nexpass-autofill\android\src\main\AndroidManifest.xml:15:13-17:67
+	android:resource
+		ADDED from D:\4. Projects\6. NexPass\Mobile\Android\tauri-plugin-nexpass-autofill\android\src\main\AndroidManifest.xml:17:17-64
+	android:name
+		ADDED from D:\4. Projects\6. NexPass\Mobile\Android\tauri-plugin-nexpass-autofill\android\src\main\AndroidManifest.xml:16:17-48
+receiver#com.nexapp.nexpass.autofill.VaultWidgetProvider
+ADDED from D:\4. Projects\6. NexPass\Mobile\Android\tauri-plugin-nexpass-autofill\android\src\main\AndroidManifest.xml:21:9-30:20
+	android:exported
+		ADDED from D:\4. Projects\6. NexPass\Mobile\Android\tauri-plugin-nexpass-autofill\android\src\main\AndroidManifest.xml:23:13-36
+	android:name
+		ADDED from D:\4. Projects\6. NexPass\Mobile\Android\tauri-plugin-nexpass-autofill\android\src\main\AndroidManifest.xml:22:13-48
+intent-filter#action:name:android.appwidget.action.APPWIDGET_UPDATE
+ADDED from D:\4. Projects\6. NexPass\Mobile\Android\tauri-plugin-nexpass-autofill\android\src\main\AndroidManifest.xml:24:13-26:29
+action#android.appwidget.action.APPWIDGET_UPDATE
+ADDED from D:\4. Projects\6. NexPass\Mobile\Android\tauri-plugin-nexpass-autofill\android\src\main\AndroidManifest.xml:25:17-84
+	android:name
+		ADDED from D:\4. Projects\6. NexPass\Mobile\Android\tauri-plugin-nexpass-autofill\android\src\main\AndroidManifest.xml:25:25-81
+meta-data#android.appwidget.provider
+ADDED from D:\4. Projects\6. NexPass\Mobile\Android\tauri-plugin-nexpass-autofill\android\src\main\AndroidManifest.xml:27:13-29:61
+	android:resource
+		ADDED from D:\4. Projects\6. NexPass\Mobile\Android\tauri-plugin-nexpass-autofill\android\src\main\AndroidManifest.xml:29:17-58
+	android:name
+		ADDED from D:\4. Projects\6. NexPass\Mobile\Android\tauri-plugin-nexpass-autofill\android\src\main\AndroidManifest.xml:28:17-58
+uses-sdk
+INJECTED from D:\4. Projects\6. NexPass\Mobile\Android\tauri-plugin-nexpass-autofill\android\src\main\AndroidManifest.xml reason: use-sdk injection requested
+INJECTED from D:\4. Projects\6. NexPass\Mobile\Android\tauri-plugin-nexpass-autofill\android\src\main\AndroidManifest.xml
+INJECTED from D:\4. Projects\6. NexPass\Mobile\Android\tauri-plugin-nexpass-autofill\android\src\main\AndroidManifest.xml
+	android:targetSdkVersion
+		INJECTED from D:\4. Projects\6. NexPass\Mobile\Android\tauri-plugin-nexpass-autofill\android\src\main\AndroidManifest.xml
+	android:minSdkVersion
+		INJECTED from D:\4. Projects\6. NexPass\Mobile\Android\tauri-plugin-nexpass-autofill\android\src\main\AndroidManifest.xml

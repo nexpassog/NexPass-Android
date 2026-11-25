@@ -1,0 +1,14 @@
+R_DEF: Internal format may change without notice
+local
+id autofill_title
+id autofill_username
+id widget_count
+id widget_line1
+id widget_line2
+id widget_root
+id widget_title
+layout autofill_item
+layout widget_vault
+string widget_description
+xml autofill_service_config
+xml vault_widget_info

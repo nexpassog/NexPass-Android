@@ -1,0 +1,62 @@
+1<?xml version="1.0" encoding="utf-8"?>
+2<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+3    package="com.nexapp.nexpass.autofill" >
+4
+5    <uses-sdk android:minSdkVersion="23" />
+6
+7    <application>
+7-->D:\4. Projects\6. NexPass\Mobile\Android\tauri-plugin-nexpass-autofill\android\src\main\AndroidManifest.xml:4:5-31:19
+8
+9        <!--
+10             NexPass as a system autofill provider. The OS binds this
+11             service; it fills credentials into other apps' login fields.
+12        -->
+13        <service
+13-->D:\4. Projects\6. NexPass\Mobile\Android\tauri-plugin-nexpass-autofill\android\src\main\AndroidManifest.xml:7:9-18:19
+14            android:name="com.nexapp.nexpass.autofill.NexPassAutofillService"
+14-->D:\4. Projects\6. NexPass\Mobile\Android\tauri-plugin-nexpass-autofill\android\src\main\AndroidManifest.xml:8:13-51
+15            android:exported="true"
+15-->D:\4. Projects\6. NexPass\Mobile\Android\tauri-plugin-nexpass-autofill\android\src\main\AndroidManifest.xml:9:13-36
+16            android:label="NexPass"
+16-->D:\4. Projects\6. NexPass\Mobile\Android\tauri-plugin-nexpass-autofill\android\src\main\AndroidManifest.xml:10:13-36
+17            android:permission="android.permission.BIND_AUTOFILL_SERVICE" >
+17-->D:\4. Projects\6. NexPass\Mobile\Android\tauri-plugin-nexpass-autofill\android\src\main\AndroidManifest.xml:11:13-74
+18            <intent-filter>
+18-->D:\4. Projects\6. NexPass\Mobile\Android\tauri-plugin-nexpass-autofill\android\src\main\AndroidManifest.xml:12:13-14:29
+19                <action android:name="android.service.autofill.AutofillService" />
+19-->D:\4. Projects\6. NexPass\Mobile\Android\tauri-plugin-nexpass-autofill\android\src\main\AndroidManifest.xml:13:17-83
+19-->D:\4. Projects\6. NexPass\Mobile\Android\tauri-plugin-nexpass-autofill\android\src\main\AndroidManifest.xml:13:25-80
+20            </intent-filter>
+21
+22            <meta-data
+22-->D:\4. Projects\6. NexPass\Mobile\Android\tauri-plugin-nexpass-autofill\android\src\main\AndroidManifest.xml:15:13-17:67
+23                android:name="android.autofill"
+23-->D:\4. Projects\6. NexPass\Mobile\Android\tauri-plugin-nexpass-autofill\android\src\main\AndroidManifest.xml:16:17-48
+24                android:resource="@xml/autofill_service_config" />
+24-->D:\4. Projects\6. NexPass\Mobile\Android\tauri-plugin-nexpass-autofill\android\src\main\AndroidManifest.xml:17:17-64
+25        </service>
+26
+27        <!-- Home-screen widget: vault snapshot + one-tap app launch. -->
+28        <receiver
+28-->D:\4. Projects\6. NexPass\Mobile\Android\tauri-plugin-nexpass-autofill\android\src\main\AndroidManifest.xml:21:9-30:20
+29            android:name="com.nexapp.nexpass.autofill.VaultWidgetProvider"
+29-->D:\4. Projects\6. NexPass\Mobile\Android\tauri-plugin-nexpass-autofill\android\src\main\AndroidManifest.xml:22:13-48
+30            android:exported="true" >
+30-->D:\4. Projects\6. NexPass\Mobile\Android\tauri-plugin-nexpass-autofill\android\src\main\AndroidManifest.xml:23:13-36
+31            <intent-filter>
+31-->D:\4. Projects\6. NexPass\Mobile\Android\tauri-plugin-nexpass-autofill\android\src\main\AndroidManifest.xml:24:13-26:29
+32                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+32-->D:\4. Projects\6. NexPass\Mobile\Android\tauri-plugin-nexpass-autofill\android\src\main\AndroidManifest.xml:25:17-84
+32-->D:\4. Projects\6. NexPass\Mobile\Android\tauri-plugin-nexpass-autofill\android\src\main\AndroidManifest.xml:25:25-81
+33            </intent-filter>
+34
+35            <meta-data
+35-->D:\4. Projects\6. NexPass\Mobile\Android\tauri-plugin-nexpass-autofill\android\src\main\AndroidManifest.xml:27:13-29:61
+36                android:name="android.appwidget.provider"
+36-->D:\4. Projects\6. NexPass\Mobile\Android\tauri-plugin-nexpass-autofill\android\src\main\AndroidManifest.xml:28:17-58
+37                android:resource="@xml/vault_widget_info" />
+37-->D:\4. Projects\6. NexPass\Mobile\Android\tauri-plugin-nexpass-autofill\android\src\main\AndroidManifest.xml:29:17-58
+38        </receiver>
+39    </application>
+40
+41</manifest>

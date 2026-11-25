@@ -1,0 +1,1 @@
+D:\4. Projects\6. NexPass\Mobile\Android\tauri-plugin-nexpass-google-signin\android\src\main\java\com\nexapp\nexpass\googlesignin\GoogleSignInPlugin.kt

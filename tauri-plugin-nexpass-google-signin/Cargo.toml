@@ -4,16 +4,16 @@ version = "0.1.0"
 description = "Native Android Google Sign-In for NexPass using Google Identity Services"
 edition = "2021"
 license = "MIT"
-
-[lib]
-name = "tauri_plugin_nexpass_google_signin"
-crate-type = ["cdylib", "rlib"]
+rust-version = "1.77.2"
+exclude = ["/examples", "/dist-js", "/guest-js", "/node_modules"]
+links = "tauri-plugin-nexpass-google-signin"
 
 [dependencies]
-tauri = { version = "2", features = ["plugin"] }
-serde = { version = "1", features = ["derive"] }
+tauri = { version = "2.11.3" }
+serde = "1.0"
 serde_json = "1"
-thiserror = "1"
+thiserror = "2"
+anyhow = "1.0"
 
 [build-dependencies]
-tauri-build = { version = "2", features = [] }
+tauri-plugin = { version = "2.6.3", features = ["build"] }

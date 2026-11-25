@@ -164,7 +164,7 @@ struct FirebaseSignInResponse {
     photoUrl: Option<String>,
 }
 
-fn exchange_id_token_for_firebase_session(
+pub fn exchange_id_token_for_firebase_session(
     google_id_token: &str,
 ) -> Result<FirebaseSession, String> {
     let client = reqwest::blocking::Client::new();

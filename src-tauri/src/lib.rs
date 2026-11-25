@@ -435,7 +435,7 @@ struct GoogleSignInResult {
 #[tauri::command]
 async fn google_sign_in(app: AppHandle) -> Result<GoogleSignInResult, String> {
     // Use native Android Google Sign-In plugin
-    let result = app.nexpass_google_signin().sign_in().await
+    let result = app.nexpass_google_signin().sign_in()
         .map_err(|e| format!("Native Google Sign-In failed: {e}"))?;
     
     let user = result.user;
@@ -681,9 +681,9 @@ fn import_vault(app: AppHandle, session: State<Session>, file_content: String, p
 /// Wipes ALL local data (vault, PIN, Google session) — used for logout
 /// and as part of account deletion. Does not touch cloud data.
 #[tauri::command]
-async fn logout_and_wipe(app: AppHandle, session: State<Session>) -> Result<(), String> {
+async fn logout_and_wipe(app: AppHandle, session: State<'_, Session>) -> Result<(), String> {
     // Sign out from native Google Sign-In
-    let _ = app.nexpass_google_signin().sign_out().await;
+    let _ = app.nexpass_google_signin().sign_out();
     
     session.lock().map_err(|_| "lock poisoned".to_string())?.key = None;
     storage::wipe_all_local_data(&app)
