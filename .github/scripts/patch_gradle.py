@@ -15,15 +15,15 @@ if "keystoreProperties" in content:
     print("Already patched, skipping.")
     sys.exit(0)
 
+# Add imports
 content = content.replace(
     "import java.util.Properties",
     "import java.util.Properties\nimport java.io.FileInputStream",
     1,
 )
 
-content = content.replace(
-    "android {",
-    '''val keystorePropertiesFile = rootProject.file("keystore.properties")
+# Add keystore properties and signing config BEFORE android {
+signing_config_block = '''val keystorePropertiesFile = rootProject.file("keystore.properties")
 val keystoreProperties = Properties()
 if (keystorePropertiesFile.exists()) {
     keystoreProperties.load(FileInputStream(keystorePropertiesFile))
@@ -39,36 +39,31 @@ android {
                 keyPassword = keystoreProperties["keyPassword"] as String
             }
         }
-    }''',
+    }'''
+
+content = content.replace(
+    "android {",
+    signing_config_block,
     1,
 )
 
+# Add signingConfig to release build type
 content = content.replace(
     'getByName("release") {',
     'getByName("release") {\n            signingConfig = signingConfigs.getByName("release")',
     1,
 )
 
-# The nexpass-autofill plugin pulls in BouncyCastle (Argon2id) whose jar
-# ships the same META-INF/versions/9/OSGI-INF/MANIFEST.MF entry as
-# jspecify — merge duplicate resource entries instead of failing.
-content = content.replace(
-    "android {",
-    '''android {
+# Add packaging options to exclude duplicate META-INF entries (only once!)
+if "packaging {" not in content:
+    content = content.replace(
+        "android {",
+        '''android {
     packaging {
         resources.excludes += "META-INF/versions/9/OSGI-INF/MANIFEST.MF"
     }''',
-    1,
-)
-
-# The nexpass-google-signin plugin may also have resource conflicts
-content = content.replace(
-    "packaging {",
-    '''packaging {
-        resources.excludes += "META-INF/versions/9/OSGI-INF/MANIFEST.MF"
-    }''',
-    1,
-)
+        1,
+    )
 
 with open(PATH, "w") as f:
     f.write(content)
